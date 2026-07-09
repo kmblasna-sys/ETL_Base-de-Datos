@@ -24,31 +24,29 @@ MAPEO_TABLAS = {
     "compra": "Compra",
     "ubicacion": "Ubicacion",
     "promocion": "PROMOCION",
-    "producto_categoria": "Producto_categoria",
     "prod_prom": "Prod_Prom",
     "historial_comercial": "Historial_Comercial",
     "almacen": "Almacen",
     "lotes_de_inventario": "Lotes_de_Inventario",
     "detalleventa": "DetalleVenta",
-    "detalle_compraable": "Detalle_Compraable"
+    "detalle_compra": "Detalle_Compra"
 }
 
 # Orden de carga de las claves de tablas respetando las dependencias de claves foráneas (FK)
 ORDEN_DE_CARGA_KEYS = [
     "tipo_promocion",
-    "producto",
     "categoria",
+    "producto",
     "venta",
     "compra",
     "ubicacion",
     "promocion",
-    "producto_categoria",
     "prod_prom",
     "historial_comercial",
     "almacen",
     "lotes_de_inventario",
     "detalleventa",
-    "detalle_compraable"
+    "detalle_compra"
 ]
 
 def normalizar_texto(text):

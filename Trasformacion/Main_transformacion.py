@@ -3,7 +3,7 @@ import sys
 import pandas as pd
 
 # Definición de rutas
-CSV_PATH = "ruta de dataset"
+CSV_PATH = "/home/martin/Descargas/walmart_Retail_Data_corregido_con_espacio.csv"
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Asegurar el acceso al directorio local de Transformación

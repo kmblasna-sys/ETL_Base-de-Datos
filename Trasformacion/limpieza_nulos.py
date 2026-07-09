@@ -12,7 +12,7 @@ def registrar_log(mensaje):
     with open("etl_fase1_auditoria.log", "a", encoding="utf-8") as f:
         f.write(linea + "\n")
 
-def ejecutar_fase1_limpieza_walmart(ruta_archivo="/home/martin/Descargas/walmart Retail Data.csv"):
+def ejecutar_fase1_limpieza_walmart(ruta_archivo="/home/martin/Descargas/walmart_Retail_Data_corregido_con_espacio.csv"):
     """
     Fase 1 (Limpieza de Pseudo-Nulos y Resolución de Brechas / Enriquecimiento):
     1. Identifica y limpia pseudo-nulos en el archivo original.
@@ -29,10 +29,14 @@ def ejecutar_fase1_limpieza_walmart(ruta_archivo="/home/martin/Descargas/walmart
     # Reemplazar patrones de pseudo-nulos por nan real
     df.replace(patrones_nulos, np.nan, inplace=True)
     
-    # Pre-identificar y pre-parsear todas las columnas de fecha a datetime para evitar problemas de orden en el bucle
+    # Pre-identificar y pre-parsear todas las columnas de fecha a datetime
     for col in df.columns:
         if "date" in col.lower():
-            df[col] = df[col].replace(["No aplica", "no aplica", "nan", "None", "N/A", "?"], np.nan)
+            if col in ['Promotion Start Date', 'Promotion End Date']:
+                # Conservar "No aplica" sin cambiarlo a NaN para evitar que se confunda con nulos reales
+                df[col] = df[col].replace(["nan", "None", "N/A", "?"], np.nan)
+            else:
+                df[col] = df[col].replace(["No aplica", "no aplica", "nan", "None", "N/A", "?"], np.nan)
             df[col] = pd.to_datetime(df[col], format='%m-%d-%y', errors='coerce')
             
     # Rellenar nulos con media, moda o lógica temporal
@@ -45,10 +49,16 @@ def ejecutar_fase1_limpieza_walmart(ruta_archivo="/home/martin/Descargas/walmart
                     df[columna] = df[columna].fillna(moda_fecha)
                 elif columna == 'Ship Date' and 'Order Date' in df.columns:
                     df[columna] = df[columna].fillna(df['Order Date'] + pd.Timedelta(days=3))
-                elif columna == 'Promotion Start Date' and 'Order Date' in df.columns:
-                    df[columna] = df[columna].fillna(df['Order Date'])
-                elif columna == 'Promotion End Date' and 'Promotion Start Date' in df.columns:
-                    df[columna] = df[columna].fillna(df['Promotion Start Date'] + pd.Timedelta(days=30))
+                elif columna == 'Promotion Start Date':
+                    # Rellenar SOLAMENTE si hay una promoción real (Promotion Code != 0 y no es nulo/No aplica)
+                    if 'Promotion Code' in df.columns and 'Order Date' in df.columns:
+                        cond_promo_real = ~df['Promotion Code'].astype(str).str.lower().str.strip().isin(['0', 'no aplica', 'nan'])
+                        df.loc[cond_promo_real & df[columna].isna(), columna] = df.loc[cond_promo_real & df[columna].isna(), 'Order Date']
+                elif columna == 'Promotion End Date':
+                    # Rellenar SOLAMENTE si hay una promoción real
+                    if 'Promotion Code' in df.columns and 'Promotion Start Date' in df.columns:
+                        cond_promo_real = ~df['Promotion Code'].astype(str).str.lower().str.strip().isin(['0', 'no aplica', 'nan'])
+                        df.loc[cond_promo_real & df[columna].isna(), columna] = df.loc[cond_promo_real & df[columna].isna(), 'Promotion Start Date'] + pd.Timedelta(days=30)
                 elif columna in ['Lot Ingress Date', 'Purchase Date'] and 'Order Date' in df.columns:
                     df[columna] = df[columna].fillna(df['Order Date'] - pd.Timedelta(days=5))
                 else:
@@ -71,7 +81,13 @@ def ejecutar_fase1_limpieza_walmart(ruta_archivo="/home/martin/Descargas/walmart
     # Regresar todas las columnas de fecha a formato cadena dd.mm.yyyy al terminar el bucle
     for col in df.columns:
         if "date" in col.lower():
-            df[col] = df[col].dt.strftime('%d.%m.%Y')
+            if col in ['Promotion Start Date', 'Promotion End Date']:
+                # Conservar el formato "No aplica" para las filas que no tienen promoción
+                fechas_formateadas = df[col].dt.strftime('%d.%m.%Y')
+                cond_no_promo = df['Promotion Code'].astype(str).str.lower().str.strip().isin(['0', 'no aplica', 'nan'])
+                df[col] = np.where(cond_no_promo, 'No aplica', fechas_formateadas)
+            else:
+                df[col] = df[col].dt.strftime('%d.%m.%Y')
 
     # --- RESOLUCIÓN DE BRECHAS Y ENRIQUECIMIENTO (Fase 3 de Programa_bd original) ---
     registrar_log("[+] Iniciando enriquecimiento y resolución de brechas...")
@@ -82,7 +98,6 @@ def ejecutar_fase1_limpieza_walmart(ruta_archivo="/home/martin/Descargas/walmart
     # 2. Inyección de valores por defecto para almacén
     df['Warehouse Type'] = 'Distribución General'
     df['Warehouse State'] = 'Activo'
-    df['Warehouse Occupied Space'] = '0'
     
     # 3. Inyección de valores por defecto para compra
     df['Purchase Type ID'] = 1

@@ -25,13 +25,12 @@ TABLAS_BD = [
     "Compra",
     "Ubicacion",
     "PROMOCION",
-    "Producto_categoria",
     "Prod_Prom",
     "Historial_Comercial",
     "Almacen",
     "Lotes_de_Inventario",
     "DetalleVenta",
-    "Detalle_Compraable"
+    "Detalle_Compra"
 ]
 
 class WalmartExplorerApp:
@@ -254,7 +253,7 @@ class WalmartExplorerApp:
         scroll_y = tb.Scrollbar(self.tree_frame, orient=VERTICAL)
         scroll_x = tb.Scrollbar(self.tree_frame, orient=HORIZONTAL)
         
-        # Crear Treeview usando estilo "striped" nativo de ttkbootstrap para alternar filas
+        # Crear Treeview usando estilo primario estándar de ttkbootstrap
         self.tree = tb.Treeview(
             self.tree_frame, 
             columns=self.columnas_actuales, 
@@ -330,7 +329,7 @@ class WalmartExplorerApp:
         lbl.pack(fill=BOTH, expand=YES)
 
 if __name__ == "__main__":
-    # Iniciamos con el tema "flatly" por defecto (muy elegante, limpio y profesional)
+    # Iniciamos con el tema "flatly" por defecto
     app_style = tb.Style(theme="flatly")
     root = app_style.master
     app = WalmartExplorerApp(root)

@@ -43,30 +43,27 @@ def ejecutar_mapeo_y_validacion(df_source):
     historial_comercial_f3['Fecha_Registro'] = historial_comercial_f3['Fecha_Registro'].apply(lambda x: x.date() if isinstance(x, datetime.datetime) else x)
     historial_comercial_f3.insert(0, 'Id_Historial', range(1, len(historial_comercial_f3) + 1))
 
-    # 4. producto
-    producto_f3 = df_source[['Product Code', 'Product Name', 'Product Container', 'Product Expiration Indicator', 'Product Shelf Life']].copy()
-    producto_f3 = producto_f3.rename(columns={
-        'Product Code': 'Codigo_de_Producto',
-        'Product Name': 'Nombre',
-        'Product Container': 'Unidad_de_Medida',
-        'Product Expiration Indicator': 'Indicador_de_Caducidad',
-        'Product Shelf Life': 'Vida_Util'
-    }).drop_duplicates(subset=['Codigo_de_Producto'])
-
-    # 5. categoria
+    # 4. categoria (definido antes para poder mapear id_categoria en producto)
     categorias_unicas = df_source['Product Category'].dropna().unique()
     categoria_f3 = pd.DataFrame({
         'id_categoria': range(1, len(categorias_unicas) + 1),
         'nombre_categoria': categorias_unicas
     })
 
-    # 6. producto_categoria
-    prod_cat_raw = df_source[['Product Code', 'Product Category']].drop_duplicates(subset=['Product Code'])
-    producto_categoria_f3 = prod_cat_raw.merge(categoria_f3, left_on='Product Category', right_on='nombre_categoria', how='left')
-    producto_categoria_f3 = producto_categoria_f3[['Product Code', 'id_categoria']].rename(columns={'Product Code': 'Codigo_de_Producto'})
-    producto_categoria_f3.insert(0, 'Id_producto_categoria', range(1, len(producto_categoria_f3) + 1))
+    # 5. producto (relacionado directamente con categoria mediante id_categoria)
+    producto_f3 = df_source[['Product Code', 'Product Name', 'Product Container', 'Product Expiration Indicator', 'Product Shelf Life', 'Product Category']].copy()
+    producto_f3 = producto_f3.merge(categoria_f3, left_on='Product Category', right_on='nombre_categoria', how='left')
+    producto_f3 = producto_f3.rename(columns={
+        'Product Code': 'Codigo_de_Producto',
+        'Product Name': 'Nombre',
+        'Product Container': 'Unidad_de_Medida',
+        'Product Expiration Indicator': 'Indicador_de_Caducidad',
+        'Product Shelf Life': 'Vida_Util',
+        'id_categoria': 'id_categoria'
+    })
+    producto_f3 = producto_f3[['Codigo_de_Producto', 'id_categoria', 'Nombre', 'Unidad_de_Medida', 'Indicador_de_Caducidad', 'Vida_Util']].drop_duplicates(subset=['Codigo_de_Producto'])
 
-    # 7. prod_prom
+    # 6. prod_prom
     prod_prom_f3 = df_source[['Product Code', 'Promotion Code', 'Promotion Start Date', 'Porcentaje_Descuento', 'Order Quantity']].copy()
     prod_prom_f3 = prod_prom_f3.rename(columns={
         'Product Code': 'Codigo_Producto',
@@ -81,7 +78,7 @@ def ejecutar_mapeo_y_validacion(df_source):
     })
     prod_prom_f3.insert(2, 'Id_prom_pro', range(1, len(prod_prom_f3) + 1))
 
-    # 8. venta
+    # 7. venta
     venta_f3 = df_source[['Order ID', 'Order Date', 'Sales']].copy()
     venta_f3 = venta_f3.rename(columns={
         'Order ID': 'Numero_Transaccion',
@@ -89,7 +86,7 @@ def ejecutar_mapeo_y_validacion(df_source):
         'Sales': 'Precio_venta'
     }).drop_duplicates(subset=['Numero_Transaccion'])
 
-    # 9. detalleventa
+    # 8. detalleventa
     detalleventa_f3 = df_source[['Order ID', 'Product Code', 'Order Quantity']].copy()
     detalleventa_f3 = detalleventa_f3.rename(columns={
         'Order ID': 'Numero_Transaccion',
@@ -98,7 +95,7 @@ def ejecutar_mapeo_y_validacion(df_source):
     })
     detalleventa_f3.insert(0, 'Id_Detalle', range(1, len(detalleventa_f3) + 1))
 
-    # 10. compra
+    # 9. compra
     compra_f3 = df_source[['Order ID', 'Purchase Type ID', 'Purchase Date', 'Purchase Total Cost']].copy()
     compra_f3['Id_Compra'] = df_source['Purchase ID'].astype(int)
     compra_f3 = compra_f3.rename(columns={
@@ -108,46 +105,54 @@ def ejecutar_mapeo_y_validacion(df_source):
     })
     compra_f3 = compra_f3[['Id_Compra', 'Id_Tipo', 'Fecha_Compra', 'Precio_Compra']].drop_duplicates(subset=['Id_Compra'])
 
-    # 11. detalle_compraable
-    detalle_compraable_f3 = df_source[['Purchase ID', 'Lot Number', 'Product Code', 'Purchase Quantity']].copy()
-    detalle_compraable_f3['Id_Compra'] = detalle_compraable_f3['Purchase ID'].astype(int)
-    detalle_compraable_f3 = detalle_compraable_f3.rename(columns={
+    # 10. lotes_de_inventario (definido antes de detalle_compra y almacen para el cálculo del espacio)
+    lotes_de_inventario_f3 = df_source[['Lot Number', 'Warehouse Code', 'Lot Ingress Date', 'Lot Occupied Space']].copy()
+    lotes_de_inventario_f3 = lotes_de_inventario_f3.rename(columns={
+        'Lot Number': 'Numero_Lote',
+        'Warehouse Code': 'Codigo_de_Almacen',
+        'Lot Ingress Date': 'Fecha_ingreso',
+        'Lot Occupied Space': 'Espacio_ocupado'
+    }).drop_duplicates(subset=['Numero_Lote'])
+
+    # 11. detalle_compra
+    detalle_compra_f3 = df_source[['Purchase ID', 'Lot Number', 'Product Code', 'Purchase Quantity']].copy()
+    detalle_compra_f3['Id_Compra'] = detalle_compra_f3['Purchase ID'].astype(int)
+    detalle_compra_f3 = detalle_compra_f3.rename(columns={
         'Lot Number': 'Numero_Lote',
         'Product Code': 'Codigo_de_Producto',
         'Purchase Quantity': 'Cantidad'
     })
-    detalle_compraable_f3 = detalle_compraable_f3[['Id_Compra', 'Numero_Lote', 'Codigo_de_Producto', 'Cantidad']].copy()
-    detalle_compraable_f3.insert(0, 'Id_Detalle_Compra', range(1, len(detalle_compraable_f3) + 1))
+    detalle_compra_f3 = detalle_compra_f3[['Id_Compra', 'Numero_Lote', 'Codigo_de_Producto', 'Cantidad']].copy()
+    detalle_compra_f3.insert(0, 'Id_Detalle_Compra', range(1, len(detalle_compra_f3) + 1))
 
-    # 12. lotes_de_inventario
-    lotes_de_inventario_f3 = df_source[['Lot Number', 'Warehouse Code', 'Lot Ingress Date']].copy()
-    lotes_de_inventario_f3 = lotes_de_inventario_f3.rename(columns={
-        'Lot Number': 'Numero_Lote',
-        'Warehouse Code': 'Codigo_de_Almacen',
-        'Lot Ingress Date': 'Fecha_ingreso'
-    }).drop_duplicates(subset=['Numero_Lote'])
+    # 12. ubicacion (se corrige Codigo_Almacen a id_Ubicación)
+    ubicacion_f3 = df_source[['Warehouse Code', 'Warehouse Address', 'Warehouse District', 'Warehouse City']].copy()
+    ubicacion_f3 = ubicacion_f3.rename(columns={
+        'Warehouse Code': 'id_Ubicación',
+        'Warehouse Address': 'Direccion',
+        'Warehouse District': 'Distrito',
+        'Warehouse City': 'Ciudad'
+    }).drop_duplicates(subset=['id_Ubicación'])
 
-    # 13. almacen
-    almacen_f3 = df_source[['Warehouse Code', 'Warehouse Name', 'Warehouse Capacity', 'Warehouse Type', 'Warehouse State', 'Warehouse Occupied Space']].copy()
+    # 13. almacen (Id_Ubicación y porcentaje de Espacio_ocupado calculado a partir de Capacidad_Total y lotes)
+    almacen_f3 = df_source[['Warehouse Code', 'Warehouse Name', 'Warehouse Capacity', 'Warehouse Type', 'Warehouse State']].copy()
     almacen_f3 = almacen_f3.rename(columns={
         'Warehouse Code': 'Codigo_Almacen',
         'Warehouse Name': 'Nombre',
         'Warehouse Capacity': 'Capacidad_Total',
         'Warehouse Type': 'Tipo',
-        'Warehouse State': 'Estado',
-        'Warehouse Occupied Space': 'Espacio_ocupado'
+        'Warehouse State': 'Estado'
     })
-    almacen_f3['Id_Ubicacion'] = almacen_f3['Codigo_Almacen']
+    almacen_f3['Id_Ubicación'] = almacen_f3['Codigo_Almacen']
     almacen_f3 = almacen_f3.drop_duplicates(subset=['Codigo_Almacen'])
-
-    # 14. ubicacion
-    ubicacion_f3 = df_source[['Warehouse Code', 'Warehouse Address', 'Warehouse District', 'Warehouse City']].copy()
-    ubicacion_f3 = ubicacion_f3.rename(columns={
-        'Warehouse Code': 'Codigo_Almacen',
-        'Warehouse Address': 'Direccion',
-        'Warehouse District': 'Distrito',
-        'Warehouse City': 'Ciudad'
-    }).drop_duplicates(subset=['Codigo_Almacen'])
+    
+    # Calcular porcentaje de espacio ocupado
+    suma_espacio = lotes_de_inventario_f3.groupby('Codigo_de_Almacen')['Espacio_ocupado'].sum().reset_index()
+    almacen_f3 = almacen_f3.merge(suma_espacio, left_on='Codigo_Almacen', right_on='Codigo_de_Almacen', how='left')
+    almacen_f3['Espacio_ocupado'] = almacen_f3['Espacio_ocupado'].fillna(0.0)
+    almacen_f3['Espacio_ocupado'] = (almacen_f3['Espacio_ocupado'] / almacen_f3['Capacidad_Total'].astype(float) * 100.0).apply(lambda x: f"{x:.2f}%")
+    if 'Codigo_de_Almacen' in almacen_f3.columns:
+        almacen_f3 = almacen_f3.drop(columns=['Codigo_de_Almacen'])
 
     print("Mapeo estructural completado.")
 
@@ -157,12 +162,11 @@ def ejecutar_mapeo_y_validacion(df_source):
         "historial_comercial": historial_comercial_f3,
         "producto": producto_f3,
         "categoria": categoria_f3,
-        "producto_categoria": producto_categoria_f3,
         "prod_prom": prod_prom_f3,
         "venta": venta_f3,
         "detalleventa": detalleventa_f3,
         "compra": compra_f3,
-        "detalle_compraable": detalle_compraable_f3,
+        "detalle_compra": detalle_compra_f3,
         "lotes_de_inventario": lotes_de_inventario_f3,
         "almacen": almacen_f3,
         "ubicacion": ubicacion_f3
@@ -241,6 +245,7 @@ def validar_esquema_compatibilidad(tablas):
         },
         "producto": {
             "Codigo_de_Producto": (str, 50, True, True, None),
+            "id_categoria": (int, None, True, False, ("categoria", "id_categoria")),
             "Nombre": (str, 150, True, False, None),
             "Unidad_de_Medida": (str, 50, False, False, None),
             "Indicador_de_Caducidad": (int, None, True, False, None),
@@ -249,11 +254,6 @@ def validar_esquema_compatibilidad(tablas):
         "categoria": {
             "id_categoria": (int, None, True, True, None),
             "nombre_categoria": (str, 100, False, False, None)
-        },
-        "producto_categoria": {
-            "Id_producto_categoria": (int, None, True, True, None),
-            "Codigo_de_Producto": (str, 50, False, False, ("producto", "Codigo_de_Producto")),
-            "id_categoria": (int, None, False, False, ("categoria", "id_categoria"))
         },
         "prod_prom": {
             "Id_prom_pro": (int, None, True, True, None),
@@ -280,7 +280,7 @@ def validar_esquema_compatibilidad(tablas):
             "Fecha_Compra": (datetime.date, None, False, False, None),
             "Precio_Compra": (float, None, False, False, None)
         },
-        "detalle_compraable": {
+        "detalle_compra": {
             "Id_Detalle_Compra": (int, None, True, True, None),
             "Id_Compra": (int, None, False, False, ("compra", "Id_Compra")),
             "Numero_Lote": (str, 50, False, False, ("lotes_de_inventario", "Numero_Lote")),
@@ -290,11 +290,12 @@ def validar_esquema_compatibilidad(tablas):
         "lotes_de_inventario": {
             "Numero_Lote": (str, 50, True, True, None),
             "Codigo_de_Almacen": (str, 50, False, False, ("almacen", "Codigo_Almacen")),
-            "Fecha_ingreso": (datetime.date, None, False, False, None)
+            "Fecha_ingreso": (datetime.date, None, False, False, None),
+            "Espacio_ocupado": (float, None, False, False, None)
         },
         "almacen": {
             "Codigo_Almacen": (str, 50, True, True, None),
-            "Id_Ubicacion": (str, 50, False, False, ("ubicacion", "Codigo_Almacen")),
+            "Id_Ubicación": (str, 50, False, False, ("ubicacion", "id_Ubicación")),
             "Nombre": (str, 150, False, False, None),
             "Tipo": (str, 50, False, False, None),
             "Capacidad_Total": (int, None, False, False, None),
@@ -302,7 +303,7 @@ def validar_esquema_compatibilidad(tablas):
             "Espacio_ocupado": (str, 50, False, False, None)
         },
         "ubicacion": {
-            "Codigo_Almacen": (str, 50, True, True, None),
+            "id_Ubicación": (str, 50, True, True, None),
             "Direccion": (str, 255, False, False, None),
             "Distrito": (str, 100, False, False, None),
             "Ciudad": (str, 100, False, False, None)
@@ -359,7 +360,10 @@ def validar_esquema_compatibilidad(tablas):
             for val in col_series.dropna():
                 if tipo_esperado == datetime.date:
                     if not isinstance(val, datetime.date) or isinstance(val, datetime.datetime):
-                        errores_tipo += 1
+                        if val in ['0000-00-00', '00:00:00']:
+                            pass
+                        else:
+                            errores_tipo += 1
                 elif tipo_esperado == datetime.datetime:
                     if not isinstance(val, (datetime.datetime, pd.Timestamp)):
                         errores_tipo += 1
