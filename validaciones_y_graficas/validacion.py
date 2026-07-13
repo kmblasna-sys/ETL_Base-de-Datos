@@ -1,20 +1,169 @@
 import sys
 import os
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.metrics import confusion_matrix
+import datetime
 import warnings
 
 warnings.filterwarnings("ignore", category=UserWarning)
-
 # Agregar el directorio base al sys.path para importaciones
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
 sys.path.append(os.path.join(BASE_DIR, "Conexion"))
 
-from Conexion.conexion import obtener_conexion
+try:
+    import pandas as pd
+    import numpy as np
+except ImportError:
+    pd = None
+    np = None
+
+try:
+    from Conexion.conexion import obtener_conexion
+except ImportError:
+    obtener_conexion = None
+
+
+def obtener_lotes_perecederos():
+    """Retorna lista de lotes perecederos y sus días restantes sin requerir pandas."""
+    if not obtener_conexion:
+        return []
+
+    conn = obtener_conexion()
+    if not conn:
+        return []
+
+    query = """
+        SELECT 
+            l.Numero_Lote,
+            l.Fecha_ingreso,
+            p.Indicador_de_Caducidad,
+            p.Vida_Util,
+            a.Capacidad_Total,
+            a.Espacio_ocupado,
+            v.Fecha_Hora_Emision AS Fecha_Transaccion
+        FROM Lotes_de_Inventario l
+        INNER JOIN Detalle_Compra dc ON l.Numero_Lote = dc.Numero_Lote
+        INNER JOIN Producto p ON dc.Codigo_de_Producto = p.Codigo_de_Producto
+        INNER JOIN Almacen a ON l.Codigo_de_Almacen = a.Codigo_Almacen
+        INNER JOIN DetalleVenta dv ON p.Codigo_de_Producto = dv.Codigo_de_Producto
+        INNER JOIN Venta v ON dv.Numero_Transaccion = v.Numero_Transaccion
+        WHERE p.Indicador_de_Caducidad = 1;
+    """
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(query)
+    filas = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    datos = []
+    for fila in filas:
+        fecha_ingreso = fila.get('Fecha_ingreso')
+        fecha_transaccion = fila.get('Fecha_Transaccion')
+
+        if isinstance(fecha_ingreso, str):
+            try:
+                fecha_ingreso = datetime.datetime.fromisoformat(fecha_ingreso)
+            except Exception:
+                fecha_ingreso = None
+        elif isinstance(fecha_ingreso, datetime.date) and not isinstance(fecha_ingreso, datetime.datetime):
+            fecha_ingreso = datetime.datetime.combine(fecha_ingreso, datetime.time.min)
+
+        if isinstance(fecha_transaccion, str):
+            try:
+                fecha_transaccion = datetime.datetime.fromisoformat(fecha_transaccion)
+            except Exception:
+                fecha_transaccion = None
+        elif isinstance(fecha_transaccion, datetime.date) and not isinstance(fecha_transaccion, datetime.datetime):
+            fecha_transaccion = datetime.datetime.combine(fecha_transaccion, datetime.time.min)
+
+        vida_util = fila.get('Vida_Util')
+        try:
+            anos = float(str(vida_util).strip().split()[0])
+        except Exception:
+            anos = 2.0
+        dias_vida = anos * 365
+
+        fecha_venc = None
+        dias_restantes = None
+        if fecha_ingreso and fecha_transaccion:
+            fecha_venc = fecha_ingreso + datetime.timedelta(days=dias_vida)
+            dias_restantes = (fecha_venc - fecha_transaccion).days
+
+        if dias_restantes is None:
+            prioridad = 'Normal'
+        elif dias_restantes < 60:
+            prioridad = 'Crítico'
+        elif dias_restantes <= 180:
+            prioridad = 'Alerta'
+        else:
+            prioridad = 'Normal'
+
+        datos.append({
+            'Numero_Lote': fila.get('Numero_Lote'),
+            'Fecha_ingreso': fecha_ingreso,
+            'Fecha_Transaccion': fecha_transaccion,
+            'Vida_Util': fila.get('Vida_Util'),
+            'Capacidad_Total': fila.get('Capacidad_Total'),
+            'Espacio_ocupado': fila.get('Espacio_ocupado'),
+            'Dias_Restantes': dias_restantes if dias_restantes is not None else -1,
+            'Prioridad_Rotacion': 2 if dias_restantes is not None and dias_restantes < 60 else 1 if dias_restantes is not None and dias_restantes <= 180 else 0,
+            'Prioridad_Label': prioridad,
+        })
+    return datos
+
+
+def obtener_df_perecederos():
+    """Retorna el DataFrame con lotes perecederos y sus días restantes."""
+    if not obtener_conexion:
+        return pd.DataFrame()
+
+    conn = obtener_conexion()
+    if not conn:
+        return pd.DataFrame()
+
+    query = """
+        SELECT 
+            l.Numero_Lote,
+            l.Fecha_ingreso,
+            p.Indicador_de_Caducidad,
+            p.Vida_Util,
+            a.Capacidad_Total,
+            a.Espacio_ocupado,
+            v.Fecha_Hora_Emision AS Fecha_Transaccion
+        FROM Lotes_de_Inventario l
+        INNER JOIN Detalle_Compra dc ON l.Numero_Lote = dc.Numero_Lote
+        INNER JOIN Producto p ON dc.Codigo_de_Producto = p.Codigo_de_Producto
+        INNER JOIN Almacen a ON l.Codigo_de_Almacen = a.Codigo_Almacen
+        INNER JOIN DetalleVenta dv ON p.Codigo_de_Producto = dv.Codigo_de_Producto
+        INNER JOIN Venta v ON dv.Numero_Transaccion = v.Numero_Transaccion
+        WHERE p.Indicador_de_Caducidad = 1;
+    """
+
+    df_perecederos = pd.read_sql(query, conn)
+    conn.close()
+
+    if df_perecederos.empty:
+        return df_perecederos
+
+    df_perecederos['Fecha_Ingreso_dt'] = pd.to_datetime(df_perecederos['Fecha_ingreso'], errors='coerce')
+    df_perecederos['Fecha_Transaccion_dt'] = pd.to_datetime(df_perecederos['Fecha_Transaccion'], errors='coerce')
+    df_perecederos['Anos_Vida_Util'] = df_perecederos['Vida_Util'].astype(str).str.extract(r'(\d+)').astype(float).fillna(2)
+    df_perecederos['Dias_Vida_Util'] = df_perecederos['Anos_Vida_Util'] * 365
+    df_perecederos['Fecha_Vencimiento'] = df_perecederos['Fecha_Ingreso_dt'] + pd.to_timedelta(df_perecederos['Dias_Vida_Util'], unit='D')
+    df_perecederos['Dias_Restantes'] = (df_perecederos['Fecha_Vencimiento'] - df_perecederos['Fecha_Transaccion_dt']).dt.days
+
+    def etiquetar_prioridad(dias):
+        if pd.isna(dias):
+            return 0
+        if dias < 60:
+            return 2
+        elif dias <= 180:
+            return 1
+        return 0
+
+    df_perecederos['Prioridad_Rotacion'] = df_perecederos['Dias_Restantes'].apply(etiquetar_prioridad)
+    df_perecederos['Prioridad_Label'] = df_perecederos['Prioridad_Rotacion'].map({2: 'Crítico', 1: 'Alerta', 0: 'Normal'})
+    df_perecederos['Dias_Restantes'] = df_perecederos['Dias_Restantes'].fillna(-1).astype(int)
+    return df_perecederos
 
 
 def validar_modelo_caducidad():
@@ -79,6 +228,17 @@ def validar_modelo_caducidad():
     X = df_perecederos[['Capacidad_Total', 'Espacio_ocupado_num', 'Dias_Restantes']].fillna(0)
     y = df_perecederos['Prioridad_Rotacion']
 
+    try:
+        from sklearn.model_selection import train_test_split
+        from sklearn.tree import DecisionTreeClassifier
+        from sklearn.metrics import confusion_matrix
+    except ImportError as e:
+        print("=========================================================================")
+        print("[!] ERROR: No se pudo cargar sklearn para validar el modelo.")
+        print(f"[!] {e}")
+        print("=========================================================================")
+        return
+
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.20, random_state=42)
 
     clf_tree = DecisionTreeClassifier(max_depth=4, random_state=42)
@@ -124,18 +284,6 @@ def validar_modelo_caducidad():
 if __name__ == "__main__":
     validar_modelo_caducidad()
 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-import warnings
-
-warnings.filterwarnings("ignore", category=UserWarning)
-
-try:
-    from Conexion.conexion import obtener_conexion
-except ImportError:
-    obtener_conexion = None
 
 def generar_histograma_vencimientos():
     if not obtener_conexion:
@@ -174,6 +322,16 @@ def generar_histograma_vencimientos():
     df_caducidad['Fecha_Vencimiento'] = df_caducidad['Fecha_Ingreso_dt'] + pd.to_timedelta(df_caducidad['Dias_Vida_Util'], unit='D')
     
     df_caducidad['Dias_Restantes'] = (df_caducidad['Fecha_Vencimiento'] - df_caducidad['Fecha_Transaccion_dt']).dt.days
+
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+    except ImportError as e:
+        print("=========================================================================")
+        print("[!] ERROR: No se pudo cargar matplotlib/seaborn para generar el gráfico.")
+        print(f"[!] {e}")
+        print("=========================================================================")
+        return
 
     plt.figure(figsize=(10, 5.5))
     
