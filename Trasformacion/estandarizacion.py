@@ -6,7 +6,7 @@ import datetime
 def parsing_date(val):
     """
     Parsea de forma segura un string a un objeto datetime.date o retorna '00:00:00' para "No aplica" / nulos.
-    """
+    """ 
     if pd.isna(val) or str(val).lower().strip() in ['no aplica', 'nan', '', '00:00:00', '0000-00-00']:
         return '00:00:00'
     try:
