@@ -6,9 +6,11 @@ import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
 # === CAMBIO CLAVE: Importamos el módulo externo de Laurente ===
-from PanelLaurente import PanelLaurente  
+from PanelLaurente import PanelLaurenteApp  
 from tab_jose import MargenesPanel
 from panel_simulacion_ofertas import PanelSimulacionOfertas
+from panel_registrar_venta import PanelRegistrarVenta
+from panel_registrar_lote import PanelRegistrarLote
 
 # Agregar el directorio base al sys.path para importaciones relativas
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -85,9 +87,11 @@ class WalmartContainerApp:
         # === CAMBIO CLAVE: Vinculamos el botón a la clase 'PanelLaurente' que importamos del otro archivo ===
         menu_items = [
             ("logistica", "📊  Capacidad Logística", LogisticaPanel),
-            ("vencimientos", "📅  Stock y Vencimientos", PanelLaurente), # <-- Vinculación directa al módulo externo
+            ("vencimientos", "📅  Stock y Vencimientos", PanelLaurenteApp), # <-- Vinculación directa al módulo externo
             ("margenes", "💰  Control Financiero", MargenesPanel),
-            ("promociones", "🏷️  Gestión de Ofertas", PanelSimulacionOfertas)
+            ("promociones", "🏷️  Gestión de Ofertas", PanelSimulacionOfertas),
+            ("ventas", "🏷️  Gestión de ventas", PanelRegistrarVenta),
+            ("compras", "🏷️  Gestión de compras", PanelRegistrarLote)
         ]
         
         for key, text, panel_cls in menu_items:

@@ -22,12 +22,13 @@ def ejecutar_mapeo_y_validacion(df_source):
     }).drop_duplicates(subset=['Id_Tipo'])
 
     # 2. promocion
-    promocion_f3 = df_source[['Promotion Code', 'Promotion Status', 'Promotion Start Date', 'Porcentaje_Descuento', 'Promotion End Date']].copy()
+    promocion_f3 = df_source[['Promotion Code', 'Promotion Status', 'Promotion Start Date', 'Discount', 'Promotion End Date']].copy()
     promocion_f3 = promocion_f3.rename(columns={
         'Promotion Code': 'Id_promocion',
         'Promotion Status': 'Estado_Promocion',
         'Promotion Start Date': 'Fecha_Inicio',
-        'Promotion End Date': 'Fecha_Finalizacion'
+        'Promotion End Date': 'Fecha_Finalizacion',
+        'Discount': 'Porcentaje_Descuento'
     })
     promocion_f3['Id_Tipo'] = promocion_f3['Id_promocion']
     promocion_f3 = promocion_f3.drop_duplicates(subset=['Id_promocion'])
@@ -61,15 +62,24 @@ def ejecutar_mapeo_y_validacion(df_source):
         'Product Shelf Life': 'Vida_Util',
         'id_categoria': 'id_categoria'
     })
+    producto_f3['Indicador_de_Caducidad'] = producto_f3['Indicador_de_Caducidad'].map({
+        0: 'No perecible',
+        1: 'Perecible',
+        '0': 'No perecible',
+        '1': 'Perecible',
+        0.0: 'No perecible',
+        1.0: 'Perecible'
+    }).fillna('No perecible')
     producto_f3 = producto_f3[['Codigo_de_Producto', 'id_categoria', 'Nombre', 'Unidad_de_Medida', 'Indicador_de_Caducidad', 'Vida_Util']].drop_duplicates(subset=['Codigo_de_Producto'])
 
     # 6. prod_prom
-    prod_prom_f3 = df_source[['Product Code', 'Promotion Code', 'Promotion Start Date', 'Porcentaje_Descuento', 'Order Quantity']].copy()
+    prod_prom_f3 = df_source[['Product Code', 'Promotion Code', 'Promotion Start Date', 'Discount', 'Order Quantity']].copy()
     prod_prom_f3 = prod_prom_f3.rename(columns={
         'Product Code': 'Codigo_Producto',
         'Promotion Code': 'Codigo_Promocion',
         'Promotion Start Date': 'Fecha_Asignacion',
-        'Order Quantity': 'Stock_Afectado'
+        'Order Quantity': 'Stock_Afectado',
+        'Discount': 'Porcentaje_Descuento'
     })
     prod_prom_f3 = prod_prom_f3.groupby(['Codigo_Producto', 'Codigo_Promocion'], as_index=False).agg({
         'Fecha_Asignacion': 'first',
@@ -87,23 +97,24 @@ def ejecutar_mapeo_y_validacion(df_source):
     }).drop_duplicates(subset=['Numero_Transaccion'])
 
     # 8. detalleventa
-    detalleventa_f3 = df_source[['Order ID', 'Product Code', 'Order Quantity']].copy()
+    detalleventa_f3 = df_source[['Order ID', 'Product Code', 'Order Quantity', 'Unit Price', 'Profit']].copy()
     detalleventa_f3 = detalleventa_f3.rename(columns={
         'Order ID': 'Numero_Transaccion',
         'Product Code': 'Codigo_de_Producto',
-        'Order Quantity': 'Cantidad_Adquirida'
+        'Order Quantity': 'Cantidad_Adquirida',
+        'Unit Price': 'Precio_Unitario',
+        'Profit': 'Utilidad'
     })
     detalleventa_f3.insert(0, 'Id_Detalle', range(1, len(detalleventa_f3) + 1))
 
     # 9. compra
-    compra_f3 = df_source[['Order ID', 'Purchase Type ID', 'Purchase Date', 'Purchase Total Cost']].copy()
+    compra_f3 = df_source[['Purchase Date', 'Purchase Total Cost']].copy()
     compra_f3['Id_Compra'] = df_source['Purchase ID'].astype(int)
     compra_f3 = compra_f3.rename(columns={
-        'Purchase Type ID': 'Id_Tipo',
         'Purchase Date': 'Fecha_Compra',
         'Purchase Total Cost': 'Precio_Compra'
     })
-    compra_f3 = compra_f3[['Id_Compra', 'Id_Tipo', 'Fecha_Compra', 'Precio_Compra']].drop_duplicates(subset=['Id_Compra'])
+    compra_f3 = compra_f3[['Id_Compra', 'Fecha_Compra', 'Precio_Compra']].drop_duplicates(subset=['Id_Compra'])
 
     # 10. lotes_de_inventario (definido antes de detalle_compra y almacen para el cálculo del espacio)
     lotes_de_inventario_f3 = df_source[['Lot Number', 'Warehouse Code', 'Lot Ingress Date', 'Lot Occupied Space']].copy()
@@ -115,14 +126,15 @@ def ejecutar_mapeo_y_validacion(df_source):
     }).drop_duplicates(subset=['Numero_Lote'])
 
     # 11. detalle_compra
-    detalle_compra_f3 = df_source[['Purchase ID', 'Lot Number', 'Product Code', 'Purchase Quantity']].copy()
+    detalle_compra_f3 = df_source[['Purchase ID', 'Lot Number', 'Product Code', 'Purchase Quantity', 'Purchase Unit Cost']].copy()
     detalle_compra_f3['Id_Compra'] = detalle_compra_f3['Purchase ID'].astype(int)
     detalle_compra_f3 = detalle_compra_f3.rename(columns={
         'Lot Number': 'Numero_Lote',
         'Product Code': 'Codigo_de_Producto',
-        'Purchase Quantity': 'Cantidad'
+        'Purchase Quantity': 'Cantidad',
+        'Purchase Unit Cost': 'Costo_Unitario'
     })
-    detalle_compra_f3 = detalle_compra_f3[['Id_Compra', 'Numero_Lote', 'Codigo_de_Producto', 'Cantidad']].copy()
+    detalle_compra_f3 = detalle_compra_f3[['Id_Compra', 'Numero_Lote', 'Codigo_de_Producto', 'Cantidad','Costo_Unitario']].copy()
     detalle_compra_f3.insert(0, 'Id_Detalle_Compra', range(1, len(detalle_compra_f3) + 1))
 
     # 12. ubicacion (se corrige Codigo_Almacen a id_Ubicación)
@@ -248,7 +260,7 @@ def validar_esquema_compatibilidad(tablas):
             "id_categoria": (int, None, True, False, ("categoria", "id_categoria")),
             "Nombre": (str, 150, True, False, None),
             "Unidad_de_Medida": (str, 50, False, False, None),
-            "Indicador_de_Caducidad": (int, None, True, False, None),
+            "Indicador_de_Caducidad": (str, 50, True, False, None),
             "Vida_Util": (str, 50, False, False, None)
         },
         "categoria": {
@@ -272,11 +284,12 @@ def validar_esquema_compatibilidad(tablas):
             "Id_Detalle": (int, None, True, True, None),
             "Numero_Transaccion": (int, None, True, False, ("venta", "Numero_Transaccion")),
             "Codigo_de_Producto": (str, 50, False, False, ("producto", "Codigo_de_Producto")),
-            "Cantidad_Adquirida": (int, None, True, False, None)
+            "Cantidad_Adquirida": (int, None, True, False, None),
+            "Precio_Unitario": (float, None, False, False, None),
+            "Utilidad": (float, None, False, False, None)
         },
         "compra": {
             "Id_Compra": (int, None, True, True, None),
-            "Id_Tipo": (int, None, False, False, None),
             "Fecha_Compra": (datetime.date, None, False, False, None),
             "Precio_Compra": (float, None, False, False, None)
         },
@@ -285,7 +298,8 @@ def validar_esquema_compatibilidad(tablas):
             "Id_Compra": (int, None, False, False, ("compra", "Id_Compra")),
             "Numero_Lote": (str, 50, False, False, ("lotes_de_inventario", "Numero_Lote")),
             "Codigo_de_Producto": (str, 50, False, False, ("producto", "Codigo_de_Producto")),
-            "Cantidad": (int, None, False, False, None)
+            "Cantidad": (int, None, False, False, None),
+            "Costo_Unitario": (float, None, False, False, None)
         },
         "lotes_de_inventario": {
             "Numero_Lote": (str, 50, True, True, None),

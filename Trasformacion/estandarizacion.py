@@ -83,7 +83,7 @@ def estandarizar_datos(df):
 
     columnas_enteras = [ #[cite: 1]
         "Order ID", "Promotion Code", "Product Expiration Indicator",  #[cite: 1]
-        "Warehouse Capacity", "Purchase Quantity", "Purchase Type ID", "Purchase ID" #[cite: 1]
+        "Warehouse Capacity", "Purchase Quantity", "Purchase ID" #[cite: 1]
     ]
     for col in columnas_enteras: #[cite: 1]
         if col in df_clean.columns: #[cite: 1]

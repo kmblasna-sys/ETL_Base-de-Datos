@@ -7,6 +7,11 @@ Proyecto: Auditoría y Simulación Promocional - Walmart (Mineria_BD)
 Componentes:
 1. Cronograma visual (Gantt) de las campañas activas, resaltando en rojo
    las promociones que ya presentan traslape (misma lógica de la Regla 1).
+   Incluye un selector "Histórico completo" / "Vigentes hoy": el dataset
+   del proyecto es un histórico 2020-2023, así que "Vigentes hoy" sirve
+   para diferenciar el estado de negocio (Estado_Promocion = 'Activa',
+   que es un flag dentro del dataset) de la vigencia real en el
+   calendario (CURDATE() dentro del rango Fecha_Inicio/Fecha_Finalizacion).
 2. Simulador de ofertas: antes de registrar una nueva promoción, cruza el
    rango propuesto contra Prod_Prom/PROMOCION para detectar traslapes y
    estima si el margen resultante caería bajo el 5% mínimo.
@@ -14,14 +19,16 @@ Componentes:
 
 import sys
 import os
-from datetime import date, datetime
+import tkinter as tk
+import matplotlib.dates as mdates
+from datetime import date, datetime, timedelta
 
 # [CORRECCIÓN DPI EN WINDOWS]
 # Sin esto, en pantallas con escalado (125%/150%, muy común en laptops),
 # Windows re-escala la ventana de Tkinter sin que la app lo sepa, y el
 # contenido termina renderizándose más ancho de lo reportado, empujando
-# paneles fuera del área visible (justo lo que causaba que el Simulador
-# no apareciera). Debe ejecutarse ANTES de crear cualquier ventana.
+# paneles fuera del área visible. Debe ejecutarse ANTES de crear cualquier
+# ventana.
 if sys.platform.startswith("win"):
     try:
         import ctypes
@@ -33,6 +40,10 @@ import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import pandas as pd
+import numpy as np
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.model_selection import train_test_split
 
 # [CONFIGURACIÓN DE RUTAS Y CONEXIÓN]
 # Se busca la carpeta "Conexion" subiendo por los directorios padre en lugar
@@ -74,13 +85,20 @@ class PanelSimulacionOfertas(ttk.Frame):
             self, text="Simulador de Nueva Oferta", padding=10
         )
 
-        # 2. IMPORTANTE: Empaquetamos PRIMERO el simulador a la derecha
+        # 2. Empaquetamos PRIMERO el simulador a la derecha
         self.frame_simulador.pack(side=RIGHT, fill=Y, padx=10, pady=10)
 
-        # 3. Empaquetamos al FINAL el cronograma para que tome TODO el espacio restante a la izquierda
+        # 3. Empaquetamos al FINAL el cronograma para que tome TODO el
+        #    espacio restante a la izquierda
         self.frame_cronograma.pack(side=LEFT, fill=BOTH, expand=True, padx=10, pady=10)
 
         self._oferta_validada = None
+        self._modelo_riesgo = None
+        self._modelo_accuracy = 0.0
+        self.modo_vista = tk.StringVar(value="historico")
+
+        # Entrena el árbol de decisión predictivo al iniciar el panel
+        self._entrenar_modelo_predictivo()
 
         # Primero se construye el simulador (así frame_simulador ya tiene su
         # ancho REAL, con sus Entry/Combobox adentro, antes de que se calcule
@@ -94,22 +112,55 @@ class PanelSimulacionOfertas(ttk.Frame):
         # transitorio (a veces hasta 1x1 px).
         self.winfo_toplevel().update()
 
+        self._construir_controles_cronograma()
         self._construir_cronograma()
 
     # ------------------------------------------------------------------
     # CRONOGRAMA VISUAL (GANTT)
     # ------------------------------------------------------------------
-    def _obtener_promociones_activas(self):
+    def _construir_controles_cronograma(self):
+        """Controles fijos del cronograma (no se destruyen al recargar el
+        gráfico): el selector de vista y el frame donde vive el gráfico."""
+        frame_controles = ttk.Frame(self.frame_cronograma)
+        frame_controles.pack(fill=X, pady=(0, 8))
+
+        ttk.Radiobutton(
+            frame_controles, text="Histórico completo", variable=self.modo_vista,
+            value="historico", command=self._construir_cronograma
+        ).pack(side=LEFT, padx=(0, 15))
+
+        ttk.Radiobutton(
+            frame_controles, text="Vigentes hoy", variable=self.modo_vista,
+            value="vigentes", command=self._construir_cronograma
+        ).pack(side=LEFT)
+
+        # Contenedor exclusivo para el gráfico: se limpia y reconstruye cada
+        # vez que cambia el selector, sin tocar los Radiobutton de arriba.
+        self.frame_grafico = ttk.Frame(self.frame_cronograma)
+        self.frame_grafico.pack(fill=BOTH, expand=True)
+
+    def _obtener_promociones_activas(self, solo_vigentes_hoy=False):
         conexion = obtener_conexion()
         if conexion is None:
             return []
         cursor = conexion.cursor()
-        cursor.execute("""
+        query = """
             SELECT Id_promocion, Fecha_Inicio, Fecha_Finalizacion
             FROM PROMOCION
-            WHERE Estado_Promocion = 'Activa' 
-            ORDER BY Fecha_Inicio
-        """)
+            WHERE Estado_Promocion = 'Activa'
+              AND Fecha_Finalizacion >= Fecha_Inicio
+        """
+        # NOTA: la condición Fecha_Finalizacion >= Fecha_Inicio descarta
+        # promociones con fechas invertidas por error de carga en el dataset
+        # (ej. Promo 12 y 15 detectadas manualmente). Es un filtro temporal:
+        # en cuanto se corrija el dato en Mineria_BD, esas promociones
+        # vuelven a aparecer solas, sin tocar este código.
+        if solo_vigentes_hoy:
+            # Estado_Promocion='Activa' es un flag de negocio dentro del
+            # dataset; esto añade el filtro de vigencia real en calendario.
+            query += " AND CURDATE() BETWEEN Fecha_Inicio AND Fecha_Finalizacion"
+        query += " ORDER BY Fecha_Inicio"
+        cursor.execute(query)
         datos = cursor.fetchall()
         cursor.close()
         conexion.close()
@@ -128,68 +179,222 @@ class PanelSimulacionOfertas(ttk.Frame):
                     conflictivas.add(id_b)
         return conflictivas
 
+    # ------------------------------------------------------------------
+    # MODELO PREDICTIVO - ÁRBOL DE DECISIÓN
+    # ------------------------------------------------------------------
+    def _entrenar_modelo_predictivo(self):
+        """Entrena un árbol de decisión con el histórico de ventas para
+        predecir la rentabilidad de una oferta antes de registrarla."""
+        conexion = obtener_conexion()
+        if conexion is None:
+            return
+        cursor = conexion.cursor()
+        try:
+            cursor.execute("""
+                SELECT
+                    dv.Codigo_de_Producto,
+                    dv.Cantidad_Adquirida,
+                    dv.Precio_Unitario,
+                    dv.Utilidad,
+                    COALESCE(p.Porcentaje_Descuento, 0.0),
+                    pr.id_categoria,
+                    COALESCE(DATEDIFF(p.Fecha_Finalizacion, p.Fecha_Inicio), 0)
+                FROM DetalleVenta dv
+                JOIN Historial_Comercial hc ON dv.Id_Detalle = hc.Id_Historial
+                LEFT JOIN PROMOCION p ON hc.Id_promocion = p.Id_promocion
+                LEFT JOIN Producto pr ON dv.Codigo_de_Producto = pr.Codigo_de_Producto
+            """)
+            rows = cursor.fetchall()
+        except Exception:
+            return
+        finally:
+            cursor.close()
+            conexion.close()
+
+        if not rows or len(rows) < 20:
+            return
+
+        registros = []
+        for row in rows:
+            _, qty, precio_unit, utilidad, descuento, cat_id, duracion = row
+            qty = int(qty or 0)
+            if qty <= 0:
+                continue
+            precio_unit = float(precio_unit or 0)
+            utilidad = float(utilidad or 0)
+            if precio_unit <= 0:
+                continue
+
+            descuento = float(descuento or 0)
+            cat_id = int(cat_id or 0)
+            duracion = int(duracion or 0)
+
+            margen = (utilidad / (precio_unit * qty)) * 100
+
+            registros.append({
+                'qty': qty,
+                'precio_unit': precio_unit,
+                'descuento': descuento,
+                'cat_id': cat_id,
+                'duracion': duracion,
+                'target': 0 if margen >= 5 else 1
+            })
+
+        if len(registros) < 20:
+            return
+
+        df = pd.DataFrame(registros)
+        X = df[['qty', 'precio_unit', 'descuento', 'cat_id', 'duracion']]
+        y = df['target']
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+
+        clf = DecisionTreeClassifier(max_depth=4, random_state=42)
+        clf.fit(X_train, y_train)
+
+        self._modelo_riesgo = clf
+        self._modelo_accuracy = clf.score(X_test, y_test) * 100
+
+    def _predecir_riesgo_oferta(self, descuento, stock, codigo_producto, duracion):
+        """Predice si una oferta propuesta tiene riesgo de no ser rentable.
+
+        Retorna:
+            tuple: (prediccion, prob_no_rentable)
+                - prediccion: 0 (rentable) o 1 (no rentable), None si no hay modelo
+                - prob_no_rentable: probabilidad estimada de no ser rentable (0.0-1.0)
+        """
+        if self._modelo_riesgo is None:
+            return None, 0.0
+
+        conexion = obtener_conexion()
+        if conexion is None:
+            return None, 0.0
+
+        cursor = conexion.cursor()
+        try:
+            cursor.execute(
+                "SELECT id_categoria FROM Producto WHERE Codigo_de_Producto = %s",
+                (codigo_producto,)
+            )
+            fila = cursor.fetchone()
+            cat_id = int(fila[0]) if fila else 0
+
+            cursor.execute("""
+                SELECT v.Precio_venta
+                FROM DetalleVenta dv
+                JOIN Venta v ON dv.Numero_Transaccion = v.Numero_Transaccion
+                WHERE dv.Codigo_de_Producto = %s
+                ORDER BY v.Fecha_Hora_Emision DESC
+                LIMIT 1
+            """, (codigo_producto,))
+            fila = cursor.fetchone()
+            precio_unit = float(fila[0]) if fila else 0.0
+        except Exception:
+            cat_id = 0
+            precio_unit = 0.0
+        finally:
+            cursor.close()
+            conexion.close()
+
+        features = pd.DataFrame([{
+            'qty': stock,
+            'precio_unit': precio_unit,
+            'descuento': descuento,
+            'cat_id': cat_id,
+            'duracion': duracion
+        }])
+
+        try:
+            proba = self._modelo_riesgo.predict_proba(features)[0]
+            pred = self._modelo_riesgo.predict(features)[0]
+            prob_no_rentable = proba[1] if len(proba) > 1 else proba[0]
+            return int(pred), float(prob_no_rentable)
+        except Exception:
+            return None, 0.0
+
+    def _mostrar_advisory(self):
+        """Muestra el frame de asesoría del modelo predictivo."""
+        if not self.frame_advisory.winfo_ismapped():
+            self.frame_advisory.pack(fill=X, pady=5, before=self.boton_aprobar)
+
+    def _ocultar_advisory(self):
+        """Oculta el frame de asesoría y reinicia el checkbox."""
+        self.frame_advisory.pack_forget()
+        self.var_acepto_riesgo.set(False)
+
+    def _on_toggle_riesgo(self):
+        """Callback del checkbox: habilita/deshabilita el botón de aprobar."""
+        if self._oferta_validada is None:
+            return
+        if self.var_acepto_riesgo.get():
+            self.boton_aprobar.config(state="normal")
+        else:
+            self.boton_aprobar.config(state=DISABLED)
+
     def _construir_cronograma(self):
-        promociones = self._obtener_promociones_activas()
+        solo_vigentes = self.modo_vista.get() == "vigentes"
+        promociones = self._obtener_promociones_activas(solo_vigentes_hoy=solo_vigentes)
         conflictivas = self._detectar_traslapes(promociones)
 
-        # 1. Mantener tamaño y proporciones originales
+        # Limpieza manual: solo el frame del gráfico, no los Radiobutton.
+        for widget in self.frame_grafico.winfo_children():
+            widget.destroy()
+
+        if not promociones:
+            mensaje = (
+                "No hay promociones vigentes hoy.\n\n"
+                "El dataset de este proyecto es histórico (2020-2023),\n"
+                "por eso 'Vigentes hoy' no devuelve resultados con estos datos."
+                if solo_vigentes else
+                "No hay promociones activas en el dataset."
+            )
+            ttk.Label(
+                self.frame_grafico, text=mensaje, justify=CENTER, bootstyle="secondary"
+            ).pack(expand=True)
+            return
+
         figura = Figure(figsize=(6, 4.5), dpi=100)
         ax = figura.add_subplot(111)
-
-        # Desactivar por completo los márgenes internos automáticos de Matplotlib en el eje X
         ax.margins(x=0)
 
         todas_las_fechas = []
-
         for idx, (id_promo, inicio, fin) in enumerate(promociones):
             duracion = (fin - inicio).days
             if duracion <= 0:
                 duracion = 1
-                
+
             todas_las_fechas.extend([inicio, fin])
-            
+
             color = "#E53935" if id_promo in conflictivas else "#0071CE"
             ax.barh(idx, duracion, left=inicio, height=0.5, color=color, edgecolor="white")
             ax.text(inicio, idx, f"  Promo {id_promo}", va="center", fontsize=8)
 
-        # 2. Configuración estándar de fechas
-        import matplotlib.dates as mdates
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
         ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-        
-        # 3. ELIMINACIÓN FORZADA DEL MARGEN IZQUIERDO
+
         if todas_las_fechas:
             fecha_min = min(todas_las_fechas)
             fecha_max = max(todas_las_fechas)
-            
-            import datetime
-            margen_derecho = datetime.timedelta(days=20) # Espacio para que no se corten los nombres al final
-            
-            # Forzamos los límites estrictos por dos métodos para asegurar que Tkinter no los altere
+            margen_derecho = timedelta(days=20)
             ax.set_xlim(fecha_min, fecha_max + margen_derecho)
             ax.set_xbound(lower=fecha_min, upper=fecha_max + margen_derecho)
 
-        # Rotación diagonal de las fechas
         figura.autofmt_xdate()
 
-        # Ajustes estéticos del contenedor
         ax.set_ylim(-0.5, len(promociones) - 0.5)
         ax.set_yticks([])
         ax.set_xlabel("Línea de Tiempo")
+        titulo = "Vigentes Hoy" if solo_vigentes else "Histórico Completo"
         ax.set_title(
-            "Cronograma de Campañas Activas\n(rojo = traslape detectado)",
+            f"Cronograma de Campañas ({titulo})\n(rojo = traslape detectado)",
             fontsize=11, fontweight="bold"
         )
         ax.grid(axis="x", linestyle="--", alpha=0.4)
-        
-        # tight_layout ajusta los elementos internos
         figura.tight_layout()
 
-        # Limpieza manual del frame para que el botón validar no altere nada
-        for widget in self.frame_cronograma.winfo_children():
-            widget.destroy()
-
-        lienzo = FigureCanvasTkAgg(figura, master=self.frame_cronograma)
+        lienzo = FigureCanvasTkAgg(figura, master=self.frame_grafico)
         lienzo.draw()
         lienzo.get_tk_widget().pack(fill=BOTH, expand=True)
 
@@ -247,6 +452,23 @@ class PanelSimulacionOfertas(ttk.Frame):
         )
         self.etiqueta_resultado.pack(fill=X, pady=5)
 
+        self.frame_advisory = ttk.Labelframe(
+            self.frame_simulador, text="🤖 Predicción del Modelo Predictivo", padding=8
+        )
+        self.etiqueta_advisory = ttk.Label(
+            self.frame_advisory, text="", wraplength=230, justify=LEFT
+        )
+        self.etiqueta_advisory.pack(fill=X, pady=(0, 5))
+        self.var_acepto_riesgo = tk.BooleanVar(value=False)
+        self.check_riesgo = ttk.Checkbutton(
+            self.frame_advisory,
+            text="Entiendo el riesgo y deseo continuar",
+            variable=self.var_acepto_riesgo,
+            bootstyle="warning",
+            command=self._on_toggle_riesgo
+        )
+        self.check_riesgo.pack(fill=X)
+
         self.boton_aprobar = ttk.Button(
             self.frame_simulador, text="Aprobar y Registrar",
             bootstyle=SUCCESS, state=DISABLED, command=self._registrar_oferta
@@ -256,26 +478,27 @@ class PanelSimulacionOfertas(ttk.Frame):
     def _validar_oferta(self):
         errores = []
 
-        # 1. Obtener strings limpios usando los nombres correctos de tus variables
+        # 1. Recolectar y limpiar entradas
         codigo_producto = self.entrada_producto.get().strip()
         fecha_inicio_str = self.entrada_inicio.get().strip()
         fecha_fin_str = self.entrada_fin.get().strip()
-        
-        # Limpiar descuento (quitar % si el usuario lo escribe)
         descuento_raw = self.entrada_descuento.get().strip().replace("%", "")
         stock_raw = self.entrada_stock.get().strip()
 
-        # 2. Validación de campos vacíos (se mantiene igual, pero con las variables locales)
         if not all([codigo_producto, fecha_inicio_str, fecha_fin_str, descuento_raw, stock_raw]):
             self.etiqueta_resultado.config(
-                text="⚠️ Todos los campos son obligatorios.", 
-                bootstyle="danger"
+                text="⚠️ Todos los campos son obligatorios.", bootstyle="danger"
             )
+            self.boton_aprobar.config(state=DISABLED)
+            self._oferta_validada = None
             return
 
-        # ... (El resto de tus bloques try-except de conversión numérica y de fechas se quedan exactamente igual)
+        # 2. Validación de formato (descuento, stock, fechas)
+        descuento_val = None
+        stock_val = None
+        fecha_inicio_dt = None
+        fecha_fin_dt = None
 
-        # 3. Conversión segura de números
         try:
             descuento_val = float(descuento_raw)
             if not (0 < descuento_val <= 100):
@@ -290,48 +513,163 @@ class PanelSimulacionOfertas(ttk.Frame):
         except ValueError:
             errores.append("- El stock debe ser un número entero (sin letras ni decimales).")
 
-        # 4. Conversión segura de fechas
         try:
-            from datetime import datetime
             fecha_inicio_dt = datetime.strptime(fecha_inicio_str, "%Y-%m-%d").date()
             fecha_fin_dt = datetime.strptime(fecha_fin_str, "%Y-%m-%d").date()
-            
             if fecha_fin_dt < fecha_inicio_dt:
                 errores.append("- La fecha de fin no puede ser anterior a la de inicio.")
         except ValueError:
             errores.append("- Formato de fecha incorrecto. Use AAAA-MM-DD (ej: 2026-07-15).")
 
-        # ... (Toda tu lógica anterior de los bloques try-except)
-
-        # 5. Mostrar los resultados específicos en la etiqueta de advertencia
         if errores:
             self.etiqueta_resultado.config(
-                text="⛔ Errores detectados:\n" + "\n".join(errores), 
+                text="⛔ Errores detectados:\n" + "\n".join(errores), bootstyle="danger"
+            )
+            self.boton_aprobar.config(state=DISABLED)
+            self._oferta_validada = None
+            return
+
+        # 3. Con el formato ya validado, se cruza contra Mineria_BD:
+        #    Regla determinística (traslape + margen) + modelo predictivo.
+        conexion = obtener_conexion()
+        if conexion is None:
+            self.etiqueta_resultado.config(text="⚠ No se pudo conectar a Mineria_BD.", bootstyle="danger")
+            self.boton_aprobar.config(state=DISABLED)
+            self._oferta_validada = None
+            self._ocultar_advisory()
+            return
+        cursor = conexion.cursor()
+
+        cursor.execute("""
+            SELECT p.Id_promocion, p.Fecha_Inicio, p.Fecha_Finalizacion
+            FROM Prod_Prom pp
+            JOIN PROMOCION p ON pp.Codigo_Promocion = p.Id_promocion
+            WHERE pp.Codigo_Producto = %s
+              AND p.Estado_Promocion = 'Activa'
+              AND p.Fecha_Inicio <= %s
+              AND p.Fecha_Finalizacion >= %s
+        """, (codigo_producto, fecha_fin_dt, fecha_inicio_dt))
+        traslapes = cursor.fetchall()
+
+        cursor.execute("""
+            SELECT v.Precio_venta
+            FROM DetalleVenta dv
+            JOIN Venta v ON dv.Numero_Transaccion = v.Numero_Transaccion
+            WHERE dv.Codigo_de_Producto = %s
+            ORDER BY v.Fecha_Hora_Emision DESC
+            LIMIT 1
+        """, (codigo_producto,))
+        fila_venta = cursor.fetchone()
+
+        cursor.execute("""
+            SELECT c.Precio_Compra
+            FROM Detalle_Compra dc
+            JOIN Compra c ON dc.Id_Compra = c.Id_Compra
+            WHERE dc.Codigo_de_Producto = %s
+            ORDER BY c.Fecha_Compra DESC
+            LIMIT 1
+        """, (codigo_producto,))
+        fila_compra = cursor.fetchone()
+
+        cursor.close()
+        conexion.close()
+
+        # --- Regla determinística: traslape → bloqueo duro ---
+        if traslapes:
+            ids_conflicto = ", ".join(str(t[0]) for t in traslapes)
+            self.etiqueta_resultado.config(
+                text=f"⛔ Oferta rechazada: traslape con promoción(es) activa(s): {ids_conflicto}.",
                 bootstyle="danger"
             )
-            self.boton_aprobar.config(state="disabled")
-            self._oferta_validada = None  # Limpiamos si había algo previo
+            self.boton_aprobar.config(state=DISABLED)
+            self._oferta_validada = None
+            self._ocultar_advisory()
+            return
+
+        # --- Regla determinística: cálculo de margen ---
+        margen_estimado = None
+        margen_texto = ""
+        if fila_venta and fila_compra:
+            precio_venta_base = float(fila_venta[0])
+            precio_compra = float(fila_compra[0])
+            precio_con_descuento = precio_venta_base * (1 - descuento_val / 100)
+            if precio_compra > 0:
+                margen_estimado = ((precio_con_descuento - precio_compra) / precio_compra) * 100
+                margen_texto = f"{margen_estimado:.2f}%"
         else:
-            # --- REEMPLAZA EL 'pass' CON ESTO ---
-            # 1. Informar al usuario que todo está en orden
             self.etiqueta_resultado.config(
-                text="✔ Oferta válida. Sin errores de formato.", 
+                text="⛔ No hay historial de venta/compra suficiente para estimar el margen.",
+                bootstyle="danger"
+            )
+            self.boton_aprobar.config(state=DISABLED)
+            self._oferta_validada = None
+            self._ocultar_advisory()
+            return
+
+        # Margen negativo → bloqueo duro (el usuario pierde dinero)
+        if margen_estimado < 0:
+            self.etiqueta_resultado.config(
+                text=f"⛔ Oferta rechazada: margen estimado de {margen_texto} es negativo.",
+                bootstyle="danger"
+            )
+            self.boton_aprobar.config(state=DISABLED)
+            self._oferta_validada = None
+            self._ocultar_advisory()
+            return
+
+        # --- Capa 2: Predicción del árbol de decisión ---
+        duracion = (fecha_fin_dt - fecha_inicio_dt).days
+        pred_modelo, prob_no_rentable = self._predecir_riesgo_oferta(
+            descuento_val, stock_val, codigo_producto, duracion
+        )
+        modelo_riesgo = (pred_modelo == 1) if pred_modelo is not None else False
+        margen_bajo = margen_estimado is not None and margen_estimado < 5
+
+        # Preparar datos validados (se usan si no hay bloqueo duro)
+        id_tipo = int(self.combo_tipo.get().split(" - ")[0]) if self.combo_tipo.get() else None
+        self._oferta_validada = (
+            codigo_producto, id_tipo, fecha_inicio_dt, fecha_fin_dt, descuento_val, stock_val
+        )
+
+        # --- Lógica combinada: regla + modelo ---
+        if margen_bajo and modelo_riesgo:
+            msg = (
+                f"⛔ Ambas señales indican riesgo:\n"
+                f"  • Margen estimado: {margen_texto} (mínimo: 5%)\n"
+                f"  • 🤖 Modelo: {prob_no_rentable * 100:.0f}% probabilidad de no ser rentable\n"
+                f"según el histórico de esta categoría\n\n"
+                f"Marque la casilla para continuar a pesar del riesgo."
+            )
+            self.etiqueta_resultado.config(text=msg, bootstyle="danger")
+            self._mostrar_advisory()
+            self.boton_aprobar.config(state=DISABLED)
+
+        elif margen_bajo:
+            msg = (
+                f"⚠ Margen estimado de {margen_texto} por debajo del mínimo (5%).\n"
+                f"🤖 Modelo predictivo: sin alerta significativa."
+            )
+            self.etiqueta_resultado.config(text=msg, bootstyle="warning")
+            self._ocultar_advisory()
+            self.boton_aprobar.config(state="normal")
+
+        elif modelo_riesgo:
+            msg = (
+                f"✔ Oferta válida según reglas de negocio (margen: {margen_texto}).\n"
+                f"🤖 Predicción del modelo: {prob_no_rentable * 100:.0f}% de probabilidad "
+                f"de no ser rentable según el histórico de esta categoría."
+            )
+            self.etiqueta_resultado.config(text=msg, bootstyle="warning")
+            self._mostrar_advisory()
+            self.boton_aprobar.config(state="normal")
+
+        else:
+            self.etiqueta_resultado.config(
+                text="✔ Oferta válida. Sin traslapes ni riesgo de margen.",
                 bootstyle="success"
             )
-            
-            # 2. HABILITAR EL BOTÓN DE REGISTRO
+            self._ocultar_advisory()
             self.boton_aprobar.config(state="normal")
-            
-            # 3. Guardar los datos limpios en la variable de la clase para usarlos al registrar
-            id_tipo = int(self.combo_tipo.get().split(" - ")[0]) if self.combo_tipo.get() else None
-            self._oferta_validada = (
-                codigo_producto, 
-                id_tipo, 
-                fecha_inicio_dt, 
-                fecha_fin_dt, 
-                descuento_val, 
-                stock_val
-            )
 
     def _registrar_oferta(self):
         """Registra la oferta respetando el orden de dependencias del esquema:
@@ -376,6 +714,9 @@ class PanelSimulacionOfertas(ttk.Frame):
 
             conexion.commit()
             self.etiqueta_resultado.config(text="✔ Oferta registrada correctamente en Mineria_BD.")
+
+            # Refresca el cronograma para que la nueva promo aparezca de inmediato
+            self._construir_cronograma()
         except Exception as error:
             conexion.rollback()
             self.etiqueta_resultado.config(text=f"⚠ Error al registrar: {error}", bootstyle=DANGER)
@@ -384,6 +725,8 @@ class PanelSimulacionOfertas(ttk.Frame):
             conexion.close()
             self.boton_aprobar.config(state=DISABLED)
             self._oferta_validada = None
+            self._ocultar_advisory()
+            self.var_acepto_riesgo.set(False)
 
 
 # ------------------------------------------------------------------

@@ -1,5 +1,6 @@
 import os
 import mysql.connector
+from mysql.connector import Error
 from mysql.connector.conversion import MySQLConverter
 from dotenv import load_dotenv
 

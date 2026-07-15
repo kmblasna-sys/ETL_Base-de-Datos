@@ -92,16 +92,14 @@ def ejecutar_fase1_limpieza_walmart(ruta_archivo="/home/martin/Descargas/walmart
     # --- RESOLUCIÓN DE BRECHAS Y ENRIQUECIMIENTO (Fase 3 de Programa_bd original) ---
     registrar_log("[+] Iniciando enriquecimiento y resolución de brechas...")
     
-    # 1. Porcentaje de descuento derivado a escala 100 (para DECIMAL(5,2))
-    df['Porcentaje_Descuento'] = df['Discount'] * 100.0
+    # 1. Porcentaje de descuento derivado directamente (0.06% en lugar de 6.00)
+    df['Porcentaje_Descuento'] = df['Discount']
     
     # 2. Inyección de valores por defecto para almacén
     df['Warehouse Type'] = 'Distribución General'
     df['Warehouse State'] = 'Activo'
     
-    # 3. Inyección de valores por defecto para compra
-    df['Purchase Type ID'] = 1
-    # 4. Cálculo de costo de compra total (Métrica derivada: Unit Cost * Quantity)
+    # 3. Cálculo de costo de compra total (Métrica derivada: Unit Cost * Quantity)
     df['Purchase Total Cost'] = df['Purchase Unit Cost'] * df['Purchase Quantity']
     
     registrar_log("[+] Enriquecimiento de datos completado.")
