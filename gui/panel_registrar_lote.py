@@ -359,10 +359,10 @@ class PanelRegistrarLote(tb.Frame):
             cursor.execute(
                 """
                 INSERT INTO Lotes_de_Inventario
-                    (Numero_Lote, Codigo_de_Almacen, Fecha_ingreso, Espacio_ocupado)
-                VALUES (%s, %s, %s, %s)
+                    (Numero_Lote, Codigo_de_Almacen, Fecha_ingreso, Espacio_ocupado, Costo_Unitario)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (numero_lote, codigo_almacen, fecha_ingreso, espacio),
+                (numero_lote, codigo_almacen, fecha_ingreso, espacio, 20.0),
             )
 
             cursor.execute(

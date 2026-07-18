@@ -269,10 +269,10 @@ class PanelRegistrarVenta(tb.Frame):
             cursor.execute(
                 """
                 INSERT INTO DetalleVenta
-                    (Numero_Transaccion, Codigo_de_Producto, Cantidad_Adquirida)
-                VALUES (%s, %s, %s)
+                    (Numero_Transaccion, Codigo_de_Producto, Cantidad_Adquirida, Precio_Unitario, Utilidad)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (numero_transaccion, codigo_producto, cantidad),
+                (numero_transaccion, codigo_producto, cantidad, 10.2,10.2),
             )
 
             conn.commit()

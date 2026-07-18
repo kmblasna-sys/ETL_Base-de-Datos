@@ -26,13 +26,13 @@ except ImportError:
 # MÓDULOS / PANELES MOCKUP RESTANTES
 # ==============================================================================
 
-class LogisticaPanel(tb.Frame):
-    def __init__(self, master, **kwargs):
-        super().__init__(master, padding=20, **kwargs)
-        tb.Label(self, text="3.6.2 Gestión y Simulación de Capacidad Logística", font=("Helvetica", 14, "bold"), bootstyle="primary").pack(anchor=W, pady=(0, 5))
-        card = tb.Frame(self, bootstyle="light", padding=20)
-        card.pack(fill=BOTH, expand=YES)
-        tb.Label(card, text="[ Módulo de Capacidad Logística - Martin & David ]", font=("Helvetica", 10, "bold")).pack(pady=50)
+#class LogisticaPanel(tb.Frame):
+    #def __init__(self, master, **kwargs):
+        #super().__init__(master, padding=20, **kwargs)
+        #tb.Label(self, text="3.6.2 Gestión y Simulación de Capacidad Logística", font=("Helvetica", 14, "bold"), bootstyle="primary").pack(anchor=W, pady=(0, 5))
+        #card = tb.Frame(self, bootstyle="light", padding=20)
+        #card.pack(fill=BOTH, expand=YES)
+        #tb.Label(card, text="[ Módulo de Capacidad Logística - Martin & David ]", font=("Helvetica", 10, "bold")).pack(pady=50)
 
 # NOTA: Se eliminó la clase duplicada/mockup VencimientosPanel de aquí, ya que ahora usamos la importada.
 
@@ -67,7 +67,7 @@ class WalmartContainerApp:
         self.crear_layout()
         self.verificar_conexion_db()
         
-        self.mostrar_panel("logistica", LogisticaPanel)
+        #self.mostrar_panel("logistica", LogisticaPanel)
 
     def crear_layout(self):
         self.main_layout = tb.Frame(self.root)
@@ -86,7 +86,7 @@ class WalmartContainerApp:
         
         # === CAMBIO CLAVE: Vinculamos el botón a la clase 'PanelLaurente' que importamos del otro archivo ===
         menu_items = [
-            ("logistica", "📊  Capacidad Logística", LogisticaPanel),
+            #("logistica", "📊  Capacidad Logística", LogisticaPanel),
             ("vencimientos", "📅  Stock y Vencimientos", PanelLaurenteApp), # <-- Vinculación directa al módulo externo
             ("margenes", "💰  Control Financiero", MargenesPanel),
             ("promociones", "🏷️  Gestión de Ofertas", PanelSimulacionOfertas),

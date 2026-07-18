@@ -62,14 +62,10 @@ def ejecutar_mapeo_y_validacion(df_source):
         'Product Shelf Life': 'Vida_Util',
         'id_categoria': 'id_categoria'
     })
-    producto_f3['Indicador_de_Caducidad'] = producto_f3['Indicador_de_Caducidad'].map({
-        0: 'No perecible',
-        1: 'Perecible',
-        '0': 'No perecible',
-        '1': 'Perecible',
-        0.0: 'No perecible',
-        1.0: 'Perecible'
-    }).fillna('No perecible')
+    
+    # Asegurar que sea 0 o 1 (booleano/tinyint)
+    producto_f3['Indicador_de_Caducidad'] = pd.to_numeric(producto_f3['Indicador_de_Caducidad']).fillna(0).astype(int)
+    
     producto_f3 = producto_f3[['Codigo_de_Producto', 'id_categoria', 'Nombre', 'Unidad_de_Medida', 'Indicador_de_Caducidad', 'Vida_Util']].drop_duplicates(subset=['Codigo_de_Producto'])
 
     # 6. prod_prom
@@ -260,7 +256,7 @@ def validar_esquema_compatibilidad(tablas):
             "id_categoria": (int, None, True, False, ("categoria", "id_categoria")),
             "Nombre": (str, 150, True, False, None),
             "Unidad_de_Medida": (str, 50, False, False, None),
-            "Indicador_de_Caducidad": (str, 50, True, False, None),
+            "Indicador_de_Caducidad": (int, None, True, False, None),
             "Vida_Util": (str, 50, False, False, None)
         },
         "categoria": {

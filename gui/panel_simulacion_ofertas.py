@@ -5,13 +5,11 @@ Módulo: panel_simulacion_ofertas.py
 Proyecto: Auditoría y Simulación Promocional - Walmart (Mineria_BD)
 
 Componentes:
-1. Cronograma visual (Gantt) de las campañas activas, resaltando en rojo
-   las promociones que ya presentan traslape (misma lógica de la Regla 1).
-   Incluye un selector "Histórico completo" / "Vigentes hoy": el dataset
-   del proyecto es un histórico 2020-2023, así que "Vigentes hoy" sirve
-   para diferenciar el estado de negocio (Estado_Promocion = 'Activa',
-   que es un flag dentro del dataset) de la vigencia real en el
-   calendario (CURDATE() dentro del rango Fecha_Inicio/Fecha_Finalizacion).
+1. Cronograma visual (Gantt) de las campañas activas: cada promoción se
+   representa como una barra horizontal cuya longitud indica la duración;
+   barras en rojo señalan traslape de fechas (detección global, no solo
+   dentro del filtro). Fechas de inicio y fin aparecen al costado de
+   cada barra. Filtro por periodos de 6 meses (Jul–Jun).
 2. Simulador de ofertas: antes de registrar una nueva promoción, cruza el
    rango propuesto contra Prod_Prom/PROMOCION para detectar traslapes y
    estima si el margen resultante caería bajo el 5% mínimo.
@@ -19,9 +17,10 @@ Componentes:
 
 import sys
 import os
+import calendar
 import tkinter as tk
-import matplotlib.dates as mdates
 from datetime import date, datetime, timedelta
+from collections import OrderedDict
 
 # [CORRECCIÓN DPI EN WINDOWS]
 # Sin esto, en pantallas con escalado (125%/150%, muy común en laptops),
@@ -40,6 +39,7 @@ import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.dates as mdates
 import pandas as pd
 import numpy as np
 from sklearn.tree import DecisionTreeClassifier
@@ -67,7 +67,13 @@ def _agregar_ruta_conexion():
 
 
 _agregar_ruta_conexion()
+# La carpeta gui queda en el path para importar el selector reutilizable.
+_gui_dir = os.path.dirname(os.path.abspath(__file__))
+if _gui_dir not in sys.path:
+    sys.path.append(_gui_dir)
+
 from Conexion.conexion import obtener_conexion
+from busqueda_producto import SelectorProductoPorNombre
 
 
 class PanelSimulacionOfertas(ttk.Frame):
@@ -95,7 +101,6 @@ class PanelSimulacionOfertas(ttk.Frame):
         self._oferta_validada = None
         self._modelo_riesgo = None
         self._modelo_accuracy = 0.0
-        self.modo_vista = tk.StringVar(value="historico")
 
         # Entrena el árbol de decisión predictivo al iniciar el panel
         self._entrenar_modelo_predictivo()
@@ -119,27 +124,90 @@ class PanelSimulacionOfertas(ttk.Frame):
     # CRONOGRAMA VISUAL (GANTT)
     # ------------------------------------------------------------------
     def _construir_controles_cronograma(self):
-        """Controles fijos del cronograma (no se destruyen al recargar el
-        gráfico): el selector de vista y el frame donde vive el gráfico."""
+        """Controles fijos del cronograma: selector de año y panel de productos."""
         frame_controles = ttk.Frame(self.frame_cronograma)
         frame_controles.pack(fill=X, pady=(0, 8))
 
-        ttk.Radiobutton(
-            frame_controles, text="Histórico completo", variable=self.modo_vista,
-            value="historico", command=self._construir_cronograma
-        ).pack(side=LEFT, padx=(0, 15))
+        ttk.Label(frame_controles, text="Periodo:").pack(side=LEFT, padx=(0, 5))
+        periodos = self._obtener_anios_disponibles()
+        self.combo_anio = ttk.Combobox(
+            frame_controles,             values=["General"] + periodos,
+            state="readonly", width=20
+        )
+        self.combo_anio.pack(side=LEFT)
+        self.combo_anio.current(0)
+        self.combo_anio.bind("<<ComboboxSelected>>", lambda e: self._construir_cronograma())
 
-        ttk.Radiobutton(
-            frame_controles, text="Vigentes hoy", variable=self.modo_vista,
-            value="vigentes", command=self._construir_cronograma
-        ).pack(side=LEFT)
+        # Panel de productos por promoción (parte inferior)
+        self.frame_productos = ttk.Labelframe(
+            self.frame_cronograma, text="Productos por Promoción", padding=5
+        )
+        self.frame_productos.pack(side=BOTTOM, fill=X, padx=0, pady=(8, 0))
 
-        # Contenedor exclusivo para el gráfico: se limpia y reconstruye cada
-        # vez que cambia el selector, sin tocar los Radiobutton de arriba.
+        columnas = ("promo", "codigo", "nombre", "categoria", "dcto", "precio_dcto")
+        self.tree_productos = ttk.Treeview(
+            self.frame_productos, columns=columnas, show="headings",
+            height=6, bootstyle="info"
+        )
+        self.tree_productos.heading("promo", text="Promo")
+        self.tree_productos.heading("codigo", text="Código")
+        self.tree_productos.heading("nombre", text="Nombre")
+        self.tree_productos.heading("categoria", text="Categoría")
+        self.tree_productos.heading("dcto", text="Dcto.%")
+        self.tree_productos.heading("precio_dcto", text="Precio c/Dcto.")
+
+        self.tree_productos.column("promo", width=45, anchor=CENTER)
+        self.tree_productos.column("codigo", width=80)
+        self.tree_productos.column("nombre", width=120)
+        self.tree_productos.column("categoria", width=85)
+        self.tree_productos.column("dcto", width=45, anchor=CENTER)
+        self.tree_productos.column("precio_dcto", width=80, anchor=E)
+
+        scroll = ttk.Scrollbar(
+            self.frame_productos, orient=VERTICAL,
+            command=self.tree_productos.yview
+        )
+        self.tree_productos.configure(yscrollcommand=scroll.set)
+        self.tree_productos.pack(side=LEFT, fill=BOTH, expand=True)
+        scroll.pack(side=RIGHT, fill=Y)
+
+        # Gráfico Gantt (toma el espacio restante arriba)
         self.frame_grafico = ttk.Frame(self.frame_cronograma)
         self.frame_grafico.pack(fill=BOTH, expand=True)
 
-    def _obtener_promociones_activas(self, solo_vigentes_hoy=False):
+    def _obtener_anios_disponibles(self):
+        """Retorna los periodos de 6 meses disponibles como strings."""
+        conexion = obtener_conexion()
+        if conexion is None:
+            return []
+        cursor = conexion.cursor()
+        cursor.execute("""
+            SELECT DISTINCT YEAR(Fecha_Inicio) AS anio
+            FROM PROMOCION
+            WHERE Estado_Promocion = 'Activa'
+              AND Fecha_Finalizacion >= Fecha_Inicio
+            ORDER BY anio
+        """)
+        anios = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        conexion.close()
+
+        MES_ABREV = {
+            7: "Jul", 1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr",
+            5: "May", 6: "Jun", 8: "Ago", 9: "Sep", 10: "Oct",
+            11: "Nov", 12: "Dic"
+        }
+        periodos = []
+        if anios:
+            anio_min = min(anios)
+            anio_max = max(anios)
+            # Periodos de Jul a Jun: Jul 2019–Jun 2020, Jul 2020–Jun 2021, ...
+            for anio in range(anio_max, anio_min - 1, -1):
+                label = f"Jul {anio} – Jun {anio + 1}"
+                periodos.append(label)
+        return periodos
+
+    def _obtener_promociones_activas(self, fecha_inicio=None, fecha_fin=None):
         conexion = obtener_conexion()
         if conexion is None:
             return []
@@ -150,21 +218,23 @@ class PanelSimulacionOfertas(ttk.Frame):
             WHERE Estado_Promocion = 'Activa'
               AND Fecha_Finalizacion >= Fecha_Inicio
         """
-        # NOTA: la condición Fecha_Finalizacion >= Fecha_Inicio descarta
-        # promociones con fechas invertidas por error de carga en el dataset
-        # (ej. Promo 12 y 15 detectadas manualmente). Es un filtro temporal:
-        # en cuanto se corrija el dato en Mineria_BD, esas promociones
-        # vuelven a aparecer solas, sin tocar este código.
-        if solo_vigentes_hoy:
-            # Estado_Promocion='Activa' es un flag de negocio dentro del
-            # dataset; esto añade el filtro de vigencia real en calendario.
-            query += " AND CURDATE() BETWEEN Fecha_Inicio AND Fecha_Finalizacion"
+        params = []
+        if fecha_inicio is not None:
+            query += " AND Fecha_Finalizacion >= %s"
+            params.append(fecha_inicio)
+        if fecha_fin is not None:
+            query += " AND Fecha_Inicio <= %s"
+            params.append(fecha_fin)
         query += " ORDER BY Fecha_Inicio"
-        cursor.execute(query)
+        cursor.execute(query, params)
         datos = cursor.fetchall()
         cursor.close()
         conexion.close()
         return datos
+
+    def _obtener_todas_las_promociones(self):
+        """Retorna todas las promociones activas sin filtro de fecha."""
+        return self._obtener_promociones_activas()
 
     def _detectar_traslapes(self, promociones):
         """Marca como conflictivas las promociones cuyo rango se cruza con otra
@@ -334,69 +404,210 @@ class PanelSimulacionOfertas(ttk.Frame):
             self.boton_aprobar.config(state=DISABLED)
 
     def _construir_cronograma(self):
-        solo_vigentes = self.modo_vista.get() == "vigentes"
-        promociones = self._obtener_promociones_activas(solo_vigentes_hoy=solo_vigentes)
-        conflictivas = self._detectar_traslapes(promociones)
+        sel = self.combo_anio.get()
 
-        # Limpieza manual: solo el frame del gráfico, no los Radiobutton.
+        # --- Parsear periodo seleccionado ---
+        es_todas = (sel == "General")
+        fecha_inicio_filtro = None
+        fecha_fin_filtro = None
+        if not es_todas:
+            # Formato: "Jul 2019 – Jun 2020"
+            partes = sel.replace("–", "-").split("-")
+            partes_inicio = partes[0].strip().split()
+            partes_fin = partes[1].strip().split()
+            MES_NUM = {"Ene": 1, "Feb": 2, "Mar": 3, "Abr": 4, "May": 5, "Jun": 6,
+                       "Jul": 7, "Ago": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dic": 12}
+            mes_ini = MES_NUM[partes_inicio[0]]
+            anio_ini = int(partes_inicio[1])
+            mes_fin = MES_NUM[partes_fin[0]]
+            anio_fin = int(partes_fin[1])
+            fecha_inicio_filtro = date(anio_ini, mes_ini, 1)
+            if mes_fin == 12:
+                fecha_fin_filtro = date(anio_fin, 12, 31)
+            else:
+                fecha_fin_filtro = date(anio_fin, mes_fin + 1, 1) - timedelta(days=1)
+
+        # --- Obtener promociones filtradas y TODAS (para traslapes globales) ---
+        promociones = self._obtener_promociones_activas(
+            fecha_inicio=fecha_inicio_filtro, fecha_fin=fecha_fin_filtro
+        )
+        todas_promociones = self._obtener_todas_las_promociones()
+        conflictivas = self._detectar_traslapes(todas_promociones)
+
         for widget in self.frame_grafico.winfo_children():
             widget.destroy()
 
         if not promociones:
-            mensaje = (
-                "No hay promociones vigentes hoy.\n\n"
-                "El dataset de este proyecto es histórico (2020-2023),\n"
-                "por eso 'Vigentes hoy' no devuelve resultados con estos datos."
-                if solo_vigentes else
-                "No hay promociones activas en el dataset."
-            )
+            if not es_todas:
+                mensaje = f"No hay promociones activas en el periodo {sel}."
+            else:
+                mensaje = "No hay promociones activas en el dataset."
             ttk.Label(
                 self.frame_grafico, text=mensaje, justify=CENTER, bootstyle="secondary"
             ).pack(expand=True)
+            self._cargar_productos_promociones([])
             return
 
-        figura = Figure(figsize=(6, 4.5), dpi=100)
-        ax = figura.add_subplot(111)
-        ax.margins(x=0)
+        # --- Rango del eje X ---
+        if es_todas:
+            fecha_min = date(2019, 11, 1)
+            fecha_max = date(2023, 12, 31)
+        else:
+            fecha_min = fecha_inicio_filtro
+            fecha_max = fecha_fin_filtro
+        margen = timedelta(days=15)
 
-        todas_las_fechas = []
+        n_promos = len(promociones)
+        altura = max(3, 0.5 + n_promos * 0.42)
+
+        figura = Figure(figsize=(8, altura), dpi=100)
+        ax = figura.add_subplot(111)
+        ax.margins(y=0.08)
+
         for idx, (id_promo, inicio, fin) in enumerate(promociones):
             duracion = (fin - inicio).days
             if duracion <= 0:
                 duracion = 1
-
-            todas_las_fechas.extend([inicio, fin])
-
             color = "#E53935" if id_promo in conflictivas else "#0071CE"
-            ax.barh(idx, duracion, left=inicio, height=0.5, color=color, edgecolor="white")
-            ax.text(inicio, idx, f"  Promo {id_promo}", va="center", fontsize=8)
+            ax.barh(idx, duracion, left=inicio, height=0.4,
+                    color=color, edgecolor="white", zorder=2)
 
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+            # --- Promo ID a la izquierda de la barra ---
+            ax.text(inicio - timedelta(days=3), idx, f"Promo {id_promo}",
+                    va="center", ha="right", fontsize=6.5,
+                    fontweight="bold", color="#333333", clip_on=True)
 
-        if todas_las_fechas:
-            fecha_min = min(todas_las_fechas)
-            fecha_max = max(todas_las_fechas)
-            margen_derecho = timedelta(days=20)
-            ax.set_xlim(fecha_min, fecha_max + margen_derecho)
-            ax.set_xbound(lower=fecha_min, upper=fecha_max + margen_derecho)
+            # --- Fechas a la derecha FUERA de la barra ---
+            texto_fechas = f"{inicio.strftime('%d/%m/%Y')} – {fin.strftime('%d/%m/%Y')}"
+            ax.text(fin + timedelta(days=4), idx, texto_fechas,
+                    va="center", ha="left", fontsize=6, color="#555555",
+                    clip_on=True)
 
-        figura.autofmt_xdate()
+        # --- Eje X: meses como columnas de referencia ---
+        ax.xaxis.set_major_locator(mdates.MonthLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%b\n%Y'))
+        ax.xaxis.set_minor_locator(mdates.MonthLocator(bymonthday=15))
 
-        ax.set_ylim(-0.5, len(promociones) - 0.5)
+        ax.set_xlim(fecha_min - margen, fecha_max + margen)
+        ax.grid(axis="x", which="major", linestyle="--", alpha=0.35, color="#B0BEC5")
+        ax.grid(axis="x", which="minor", linestyle=":", alpha=0.15, color="#CFD8DC")
+
+        # --- Meses arriba ---
+        ax.xaxis.set_ticks_position("both")
+        ax.tick_params(axis="x", which="major", labelsize=6, length=4)
+        ax.xaxis.set_label_position("top")
+
+        # --- Eje Y ---
+        ax.set_ylim(-0.5, n_promos - 0.5)
         ax.set_yticks([])
-        ax.set_xlabel("Línea de Tiempo")
-        titulo = "Vigentes Hoy" if solo_vigentes else "Histórico Completo"
-        ax.set_title(
-            f"Cronograma de Campañas ({titulo})\n(rojo = traslape detectado)",
-            fontsize=11, fontweight="bold"
-        )
-        ax.grid(axis="x", linestyle="--", alpha=0.4)
+        ax.set_xlabel("Línea de Tiempo (meses)", fontsize=8, labelpad=8)
+        ax.set_ylabel("")
+
+        ax.set_title(f"Cronograma de Campañas  {sel}",
+                     fontsize=9, fontweight="bold", pad=12)
+
+        ax.spines["top"].set_visible(False)
+        ax.spines["left"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        # --- Leyenda ---
+        from matplotlib.patches import Patch
+        elementos_leyenda = [
+            Patch(facecolor="#0071CE", edgecolor="white", label="Sin traslape"),
+            Patch(facecolor="#E53935", edgecolor="white", label="Con traslape"),
+        ]
+        ax.legend(handles=elementos_leyenda, loc="lower right",
+                  fontsize=6, framealpha=0.9, edgecolor="#CFD8DC")
+
         figura.tight_layout()
 
         lienzo = FigureCanvasTkAgg(figura, master=self.frame_grafico)
         lienzo.draw()
         lienzo.get_tk_widget().pack(fill=BOTH, expand=True)
+
+        self._cargar_productos_promociones(
+            [id_p for id_p, _, _ in promociones]
+        )
+
+    def _cargar_productos_promociones(self, ids_promociones):
+        """Carga y muestra en el Treeview los productos de las promociones dadas.
+        Para promociones con ≤5 productos muestra cada uno; para las demás
+        muestra un resumen de categorías."""
+        for item in self.tree_productos.get_children():
+            self.tree_productos.delete(item)
+
+        if not ids_promociones:
+            return
+
+        conexion = obtener_conexion()
+        if conexion is None:
+            return
+        cursor = conexion.cursor()
+        try:
+            placeholders = ",".join(["%s"] * len(ids_promociones))
+            cursor.execute(f"""
+                SELECT
+                    pp.Codigo_Promocion,
+                    pr.Codigo_de_Producto,
+                    pr.Nombre,
+                    cat.nombre_categoria,
+                    pp.Porcentaje_Descuento,
+                    (
+                        SELECT v.Precio_venta
+                        FROM DetalleVenta dv2
+                        JOIN Venta v ON dv2.Numero_Transaccion = v.Numero_Transaccion
+                        WHERE dv2.Codigo_de_Producto = pr.Codigo_de_Producto
+                        ORDER BY v.Fecha_Hora_Emision DESC
+                        LIMIT 1
+                    ) AS Precio_Base
+                FROM Prod_Prom pp
+                JOIN Producto pr ON pp.Codigo_Producto = pr.Codigo_de_Producto
+                LEFT JOIN Categoria cat ON pr.id_categoria = cat.id_categoria
+                WHERE pp.Codigo_Promocion IN ({placeholders})
+                ORDER BY pp.Codigo_Promocion, pr.Nombre
+            """, ids_promociones)
+            filas = cursor.fetchall()
+        except Exception:
+            filas = []
+        finally:
+            cursor.close()
+            conexion.close()
+
+        # Agrupar por promoción
+        por_promo = OrderedDict()
+        for promo_id, cod, nombre, cat, dcto, precio_base in filas:
+            if promo_id not in por_promo:
+                por_promo[promo_id] = []
+            por_promo[promo_id].append((cod, nombre, cat, dcto, precio_base))
+
+        for promo_id, productos in por_promo.items():
+            dcto_val = float(productos[0][3] or 0)
+            if len(productos) <= 5:
+                for cod, nombre, cat, dcto, precio_base in productos:
+                    pb = float(precio_base) if precio_base else 0.0
+                    d = float(dcto or 0)
+                    precio_dcto = pb * (1 - d / 100) if pb > 0 else 0.0
+                    self.tree_productos.insert("", "end", values=(
+                        promo_id,
+                        cod or "",
+                        (nombre or "").split(",")[0].strip(),
+                        cat or "",
+                        f"{d:.0f}%" if d > 0 else "-",
+                        f"${precio_dcto:.2f}" if precio_dcto > 0 else "-"
+                    ))
+            else:
+                categorias = list(set(p[2] for p in productos if p[2]))
+                cat_texto = ", ".join(categorias[:3])
+                if len(categorias) > 3:
+                    cat_texto += f" (+{len(categorias) - 3})"
+                self.tree_productos.insert("", "end", values=(
+                    promo_id,
+                    f"{len(productos)} productos",
+                    "",
+                    cat_texto,
+                    f"{dcto_val:.0f}%",
+                    "-"
+                ))
 
     # ------------------------------------------------------------------
     # SIMULADOR DE VALIDACIÓN
@@ -412,13 +623,119 @@ class PanelSimulacionOfertas(ttk.Frame):
         conexion.close()
         return datos
 
+    def _cargar_productos_selector(self):
+        """Carga el catálogo de productos para el selector con búsqueda."""
+        conexion = obtener_conexion()
+        if conexion is None:
+            self.selector_producto.set_productos([])
+            return
+        cursor = conexion.cursor()
+        try:
+            cursor.execute(
+                "SELECT Codigo_de_Producto, Nombre FROM Producto ORDER BY Nombre"
+            )
+            self.selector_producto.set_productos(cursor.fetchall())
+        except Exception:
+            self.selector_producto.set_productos([])
+        finally:
+            cursor.close()
+            conexion.close()
+
+    def _meses_opciones(self):
+        return [
+            (1, "Ene"), (2, "Feb"), (3, "Mar"), (4, "Abr"),
+            (5, "May"), (6, "Jun"), (7, "Jul"), (8, "Ago"),
+            (9, "Sep"), (10, "Oct"), (11, "Nov"), (12, "Dic"),
+        ]
+
+    def _anios_sugeridos(self):
+        """Año actual y el siguiente."""
+        anio = date.today().year
+        return [anio, anio + 1]
+
+    def _crear_selector_fecha(self, padre, fecha_inicial=None):
+        """Crea combos independientes Año / Mes / Día y retorna un dict de widgets."""
+        if fecha_inicial is None:
+            fecha_inicial = date.today()
+
+        frame = ttk.Frame(padre)
+        frame.pack(fill=X)
+
+        anios = self._anios_sugeridos()
+        meses = self._meses_opciones()
+        labels_mes = [f"{num:02d} - {abrev}" for num, abrev in meses]
+
+        ttk.Label(frame, text="Año").pack(side=LEFT)
+        combo_anio = ttk.Combobox(
+            frame, values=anios, state="readonly", width=6
+        )
+        combo_anio.pack(side=LEFT, padx=(2, 6))
+        if fecha_inicial.year in anios:
+            combo_anio.set(fecha_inicial.year)
+        else:
+            combo_anio.current(0)
+
+        ttk.Label(frame, text="Mes").pack(side=LEFT)
+        combo_mes = ttk.Combobox(
+            frame, values=labels_mes, state="readonly", width=9
+        )
+        combo_mes.pack(side=LEFT, padx=(2, 6))
+        combo_mes.current(fecha_inicial.month - 1)
+
+        ttk.Label(frame, text="Día").pack(side=LEFT)
+        combo_dia = ttk.Combobox(frame, state="readonly", width=4)
+        combo_dia.pack(side=LEFT, padx=(2, 0))
+
+        selector = {
+            "anio": combo_anio,
+            "mes": combo_mes,
+            "dia": combo_dia,
+        }
+
+        def _actualizar_dias(_event=None):
+            try:
+                anio = int(combo_anio.get())
+                mes = int(combo_mes.get().split(" - ")[0])
+            except (ValueError, IndexError):
+                return
+            max_dia = calendar.monthrange(anio, mes)[1]
+            dias = list(range(1, max_dia + 1))
+            dia_actual = combo_dia.get()
+            combo_dia.configure(values=dias)
+            if dia_actual and dia_actual.isdigit() and int(dia_actual) in dias:
+                combo_dia.set(int(dia_actual))
+            else:
+                dia_pref = min(fecha_inicial.day, max_dia)
+                combo_dia.set(dia_pref)
+
+        combo_anio.bind("<<ComboboxSelected>>", _actualizar_dias)
+        combo_mes.bind("<<ComboboxSelected>>", _actualizar_dias)
+        _actualizar_dias()
+        return selector
+
+    def _fecha_desde_selector(self, selector):
+        """Arma un date a partir de los combos Año/Mes/Día. None si falta algo."""
+        try:
+            anio = int(selector["anio"].get())
+            mes = int(selector["mes"].get().split(" - ")[0])
+            dia = int(selector["dia"].get())
+            return date(anio, mes, dia)
+        except (ValueError, TypeError, IndexError, KeyError):
+            return None
+
     def _construir_formulario_simulador(self):
         self._tipos_promocion = self._obtener_tipos_promocion()
         opciones_tipo = [f"{tid} - {nombre}" for tid, nombre in self._tipos_promocion]
 
-        ttk.Label(self.frame_simulador, text="Código de Producto:").pack(anchor=W, pady=(5, 0))
-        self.entrada_producto = ttk.Entry(self.frame_simulador)
-        self.entrada_producto.pack(fill=X)
+        producto_box = ttk.Labelframe(
+            self.frame_simulador, text="Producto", padding=8
+        )
+        producto_box.pack(fill=X, pady=(5, 0))
+        self.selector_producto = SelectorProductoPorNombre(
+            producto_box, altura_lista=5
+        )
+        self.selector_producto.pack(fill=X)
+        self._cargar_productos_selector()
 
         ttk.Label(self.frame_simulador, text="Tipo de Promoción:").pack(anchor=W, pady=(10, 0))
         self.combo_tipo = ttk.Combobox(self.frame_simulador, values=opciones_tipo, state="readonly")
@@ -426,13 +743,16 @@ class PanelSimulacionOfertas(ttk.Frame):
         if opciones_tipo:
             self.combo_tipo.current(0)
 
-        ttk.Label(self.frame_simulador, text="Fecha Inicio (YYYY-MM-DD):").pack(anchor=W, pady=(10, 0))
-        self.entrada_inicio = ttk.Entry(self.frame_simulador)
-        self.entrada_inicio.pack(fill=X)
+        hoy = date.today()
+        ttk.Label(self.frame_simulador, text="Fecha Inicio:").pack(anchor=W, pady=(10, 0))
+        self.selector_fecha_inicio = self._crear_selector_fecha(
+            self.frame_simulador, fecha_inicial=hoy
+        )
 
-        ttk.Label(self.frame_simulador, text="Fecha Fin (YYYY-MM-DD):").pack(anchor=W, pady=(10, 0))
-        self.entrada_fin = ttk.Entry(self.frame_simulador)
-        self.entrada_fin.pack(fill=X)
+        ttk.Label(self.frame_simulador, text="Fecha Fin:").pack(anchor=W, pady=(10, 0))
+        self.selector_fecha_fin = self._crear_selector_fecha(
+            self.frame_simulador, fecha_inicial=hoy + timedelta(days=7)
+        )
 
         ttk.Label(self.frame_simulador, text="Descuento Propuesto (%):").pack(anchor=W, pady=(10, 0))
         self.entrada_descuento = ttk.Entry(self.frame_simulador)
@@ -479,13 +799,21 @@ class PanelSimulacionOfertas(ttk.Frame):
         errores = []
 
         # 1. Recolectar y limpiar entradas
-        codigo_producto = self.entrada_producto.get().strip()
-        fecha_inicio_str = self.entrada_inicio.get().strip()
-        fecha_fin_str = self.entrada_fin.get().strip()
+        codigo_producto = self.selector_producto.get_codigo()
+        fecha_inicio_dt = self._fecha_desde_selector(self.selector_fecha_inicio)
+        fecha_fin_dt = self._fecha_desde_selector(self.selector_fecha_fin)
         descuento_raw = self.entrada_descuento.get().strip().replace("%", "")
         stock_raw = self.entrada_stock.get().strip()
 
-        if not all([codigo_producto, fecha_inicio_str, fecha_fin_str, descuento_raw, stock_raw]):
+        if not codigo_producto:
+            self.etiqueta_resultado.config(
+                text="⚠️ Busca y selecciona un producto de la lista.", bootstyle="danger"
+            )
+            self.boton_aprobar.config(state=DISABLED)
+            self._oferta_validada = None
+            return
+
+        if not all([fecha_inicio_dt, fecha_fin_dt, descuento_raw, stock_raw]):
             self.etiqueta_resultado.config(
                 text="⚠️ Todos los campos son obligatorios.", bootstyle="danger"
             )
@@ -496,8 +824,6 @@ class PanelSimulacionOfertas(ttk.Frame):
         # 2. Validación de formato (descuento, stock, fechas)
         descuento_val = None
         stock_val = None
-        fecha_inicio_dt = None
-        fecha_fin_dt = None
 
         try:
             descuento_val = float(descuento_raw)
@@ -513,13 +839,8 @@ class PanelSimulacionOfertas(ttk.Frame):
         except ValueError:
             errores.append("- El stock debe ser un número entero (sin letras ni decimales).")
 
-        try:
-            fecha_inicio_dt = datetime.strptime(fecha_inicio_str, "%Y-%m-%d").date()
-            fecha_fin_dt = datetime.strptime(fecha_fin_str, "%Y-%m-%d").date()
-            if fecha_fin_dt < fecha_inicio_dt:
-                errores.append("- La fecha de fin no puede ser anterior a la de inicio.")
-        except ValueError:
-            errores.append("- Formato de fecha incorrecto. Use AAAA-MM-DD (ej: 2026-07-15).")
+        if fecha_fin_dt < fecha_inicio_dt:
+            errores.append("- La fecha de fin no puede ser anterior a la de inicio.")
 
         if errores:
             self.etiqueta_resultado.config(
@@ -714,6 +1035,7 @@ class PanelSimulacionOfertas(ttk.Frame):
 
             conexion.commit()
             self.etiqueta_resultado.config(text="✔ Oferta registrada correctamente en Mineria_BD.")
+            self.selector_producto.limpiar()
 
             # Refresca el cronograma para que la nueva promo aparezca de inmediato
             self._construir_cronograma()
